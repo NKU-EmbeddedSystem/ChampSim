@@ -13,7 +13,7 @@ test/000-test-main
 
 tracer/pin/obj-intel64/
 
-vcpkg_installed/
+vcpkg_installed
 
 **/_build
 **/_doxygen
@@ -30,3 +30,5 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
+trace
+.omc/state

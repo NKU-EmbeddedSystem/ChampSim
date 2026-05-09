@@ -29,6 +29,7 @@
 #endif
 #include "defaults.hpp"
 #include "environment.h"
+#include "hint_table.h"
 #include "ooo_cpu.h" // for O3_CPU
 #include "phase_info.h"
 #include "stats_printer.h"
@@ -83,9 +84,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   auto* json_option =
       app.add_option("--json", json_file_name, "The name of the file to receive JSON output. If no name is specified, stdout will be used")->expected(0, 1);
 
+  std::string hint_file_name;
+  app.add_option("--hint-file", hint_file_name, "Path to the hint table binary file for hint-informed policies");
+
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
+
+  if (!hint_file_name.empty()) {
+    hint_table::instance().load(hint_file_name);
+  }
 
   const bool warmup_given = (warmup_instr_option->count() > 0) || (deprec_warmup_instr_option->count() > 0);
   const bool simulation_given = (sim_instr_option->count() > 0) || (deprec_sim_instr_option->count() > 0);
