@@ -31,4 +31,6 @@ compile_commands.json
 .vscode/
 **/.DS_Store
 trace
-.omc/state
+.omc/
+*.log
+tools/profiling/data/
