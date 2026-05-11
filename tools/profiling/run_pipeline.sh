@@ -64,7 +64,7 @@ fi
 # ─── Derived paths ───────────────────────────────────────────────────────────
 BENCH_DIR="$DATA_ROOT/$BENCHMARK"
 SIMPOINTS_JSON="$BENCH_DIR/simpoints.json"
-BINARY_PATH=""                         # set in stage 2
+BINARY_PATH="${BINARY_PATH:-}"         # set in stage 2, or pre-set via env
 DISASM_INDEX="$BENCH_DIR/disasm_index.json"
 TRACES_DIR="$BENCH_DIR/traces"
 PROFILING_DIR="$BENCH_DIR/profiling"
@@ -140,7 +140,7 @@ stage_2() {
     fi
 
     if [ ! -f "$BINARY_PATH" ]; then
-        BINARY_PATH=$(find "${spec_build_dir:-$spec_run_dir}" -type f -executable -name "$exe_name*" 2>/dev/null | head -1)
+        BINARY_PATH=$(find "${spec_build_dir:-$spec_run_dir}" -type f -executable -not -name "*.h" -not -name "*.c" -name "$exe_name*" 2>/dev/null | head -1)
     fi
 
     if [ ! -f "$BINARY_PATH" ]; then
@@ -160,10 +160,11 @@ stage_2() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3: Generate traces via PIN (one per SimPoint above threshold)
+#           Runs multiple traces in parallel (concurrency = JOBS).
 # ─────────────────────────────────────────────────────────────────────────────
 stage_3() {
     should_run 3 || return 0
-    log "=== STAGE 3: Generate traces for $BENCHMARK ==="
+    log "=== STAGE 3: Generate traces for $BENCHMARK (parallel, jobs=$JOBS) ==="
 
     if [ ! -f "$PIN_TRACER" ]; then
         log "ERROR: PIN tracer not found at $PIN_TRACER"
@@ -177,62 +178,141 @@ stage_3() {
         exit 1
     fi
 
-    # Read SimPoints JSON
-    local intervals=$(python3 -c "
+    # Read SimPoints JSON into arrays
+    local -a sids=() starts=() weights=()
+    while IFS=',' read -r sid start weight; do
+        sids+=("$sid")
+        starts+=("$start")
+        weights+=("$weight")
+    done < <(python3 -c "
 import json
 data = json.load(open('$SIMPOINTS_JSON'))
 for entry in data:
     if entry['weight'] >= $WEIGHT_THRESHOLD:
         sid = entry['interval_id']
-        # Start instruction = interval_id × interval_size
         start = sid * $INTERVAL_SIZE
         print(f'{sid},{start},{entry[\"weight\"]}')
 " 2>/dev/null)
 
-    if [ -z "$intervals" ]; then
+    if [ ${#sids[@]} -eq 0 ]; then
         log "ERROR: No SimPoints found above weight threshold $WEIGHT_THRESHOLD"
         exit 1
     fi
 
+    log "  Found ${#sids[@]} SimPoint intervals to trace"
+
     ensure_dir "$TRACES_DIR"
 
-    local spec_input_dir="$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/data/train/input"
-    local spec_run_dir=$(dirname "$BINARY_PATH")
+    # Find SPEC run directory (where speccmds.cmd and input files live)
+    local spec_run_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/run" \
+        -maxdepth 2 -name "run_base_train_*" -type d 2>/dev/null | head -1)
+    [ -z "$spec_run_dir" ] && spec_run_dir=$(dirname "$BINARY_PATH")
 
-    while IFS=',' read -r sid start weight; do
-        local trace_out="$TRACES_DIR/${BENCHMARK}-${sid}B.champsimtrace"
+    # Read SPEC command-line args from speccmds.cmd
+    # Format: -C <rundir>  then  -o <out> -e <err> <binary> <args...>
+    # We skip -C lines and strip -o/-e to get <binary> <args>
+    local spec_work_dir="$spec_run_dir"
+    local spec_args=""
+    local spec_cmd_file="$spec_run_dir/speccmds.cmd"
+    if [ -f "$spec_cmd_file" ]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ ^# ]] && continue
+            [[ -z "$line" ]] && continue
+            if [[ "$line" =~ ^-C ]]; then
+                spec_work_dir=$(echo "$line" | sed 's/^-C //')
+                continue
+            fi
+            # Command line: strip -o <file>, -e <file>, and any binary reference (words containing _base.)
+            # We use BINARY_PATH as the executable; keep only the real program arguments
+            spec_args=$(echo "$line" | sed 's/-o [^ ]* //' | sed 's/-e [^ ]* //' | sed 's/^ *//' | sed -E 's/ ?[^ ]*_base\.[^ ]*//g' | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
+            break
+        done < "$spec_cmd_file"
+        log "  SPEC work dir: $spec_work_dir"
+        log "  SPEC args: $spec_args"
+    fi
+
+    # Parse specinvoke -i <file> (stdin redirect) if present
+    local stdin_file=""
+    if [[ "$spec_args" =~ -i[[:space:]]+([^[:space:]]+) ]]; then
+        stdin_file="${BASH_REMATCH[1]}"
+        spec_args=$(echo "$spec_args" | sed -E 's/-i [^ ]+ //' | sed 's/^ *//;s/ *$//')
+        log "  SPEC stdin redirect: $stdin_file"
+    fi
+
+    # ── Parallel execution with concurrency control ─────────────────────────
+    local running=0
+    local failfile
+    failfile=$(mktemp)
+
+    for i in "${!sids[@]}"; do
+        sid="${sids[$i]}"
+        start="${starts[$i]}"
+        weight="${weights[$i]}"
+        trace_out="$TRACES_DIR/${BENCHMARK}-${sid}B.champsimtrace"
+
+        # Skip if already completed
         if [ -f "${trace_out}.xz" ]; then
-            log "  Trace for interval $sid already exists, skipping"
+            log "  [SKIP] Interval $sid already traced → ${trace_out}.xz"
             continue
         fi
 
-        # Construct PIN command
-        # The SPEC binary is invoked via specinvoke or directly.
-        # For direct invocation, we need to find the correct command line from SPEC.
-        local pin_cmd="${PIN_ROOT}/pin -t ${PIN_TRACER}"
-        pin_cmd+=" -o ${trace_out}"
-        pin_cmd+=" -s ${start}"
-        pin_cmd+=" -t ${INTERVAL_SIZE}"
-        pin_cmd+=" -- ${BINARY_PATH}"
+        # Wait if at concurrency limit (drain one completed job)
+        while [ "$running" -ge "$JOBS" ]; do
+            wait -n 2>/dev/null || true
+            ((running--)) || true
+        done
 
-        # Try to read SPEC command-line args from speccmds.cmd
-        local spec_cmd_file="$spec_run_dir/speccmds.cmd"
-        if [ -f "$spec_cmd_file" ]; then
-            local spec_args=$(grep -v '^#' "$spec_cmd_file" | head -1 | sed 's/.*-- //')
-            pin_cmd+=" $spec_args"
-        fi
+        log "  [LAUNCH] SimPoint $sid (weight=$weight, start_instr=$start, slot=$((running+1))/$JOBS)"
 
-        log "  SimPoint $sid (weight=$weight, start_instr=$start)"
-        run "$pin_cmd"
+        (
+            pin_cmd="${PIN_ROOT}/pin -t ${PIN_TRACER} -o ${trace_out} -s ${start} -t ${INTERVAL_SIZE} -- ${BINARY_PATH} ${spec_args}"
+            if $DRY_RUN; then
+                echo "[DRY-RUN] cd ${spec_work_dir} && $pin_cmd"
+                echo "[DRY-RUN] xz -T0 ${trace_out}"
+                exit 0
+            fi
 
-        # Compress trace
-        if [ -f "$trace_out" ] && [ ! -f "${trace_out}.xz" ]; then
-            run xz -T0 "$trace_out"
-            log "  Compressed: ${trace_out}.xz"
-        fi
-    done <<< "$intervals"
+            echo "[$(date '+%H:%M:%S')] [PIN:$sid] cd ${spec_work_dir}"
+            cd "$spec_work_dir" || { echo "[$(date '+%H:%M:%S')] [PIN:$sid] FAILED: cannot cd to $spec_work_dir"; echo "1" >> "$failfile"; exit 1; }
 
-    log "Traces generated in $TRACES_DIR"
+            echo "[$(date '+%H:%M:%S')] [PIN:$sid] Starting trace (skip ${start} instrs, record ${INTERVAL_SIZE})..."
+            if [ -n "${stdin_file:-}" ] && [ -f "$stdin_file" ]; then
+                eval "$pin_cmd" < "$stdin_file"
+            elif [ -n "${stdin_file:-}" ]; then
+                eval "$pin_cmd" < "${spec_work_dir}/${stdin_file}"
+            else
+                eval "$pin_cmd"
+            fi
+            local pin_ec=$?
+            if [ "$pin_ec" -eq 0 ]; then
+                echo "[$(date '+%H:%M:%S')] [PIN:$sid] Trace done, compressing..."
+                if [ -f "$trace_out" ]; then
+                    xz -T0 "$trace_out"
+                    echo "[$(date '+%H:%M:%S')] [PIN:$sid] Compressed → ${trace_out}.xz"
+                fi
+                exit 0
+            else
+                echo "[$(date '+%H:%M:%S')] [PIN:$sid] FAILED (exit code $pin_ec)"
+                echo "1" >> "$failfile"
+                exit 1
+            fi
+        ) &
+        ((running++)) || true
+    done
+
+    # Wait for all remaining background jobs
+    wait
+
+    if [ -s "$failfile" ]; then
+        local failed_count
+        failed_count=$(wc -l < "$failfile")
+        rm -f "$failfile"
+        log "ERROR: $failed_count trace job(s) failed"
+        exit 1
+    fi
+    rm -f "$failfile"
+
+    log "All traces generated in $TRACES_DIR"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
