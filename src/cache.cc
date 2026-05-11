@@ -27,6 +27,7 @@
 #include "champsim.h"
 #include "chrono.h"
 #include "deadlock.h"
+#include "profiler.h"
 #include "instruction.h"
 #include "util/algorithm.h"
 #include "util/bits.h"
@@ -264,6 +265,14 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   }
 
   auto metadata_thru = handle_pkt.pf_metadata;
+
+#ifdef HINT_PROFILING
+  {
+    uint64_t latency = hit ? HIT_LATENCY.count() : FILL_LATENCY.count();
+    PROFILER_RECORD_ACCESS(handle_pkt.ip.to<uint64_t>(), 0, 0, hit, latency);
+  }
+#endif
+
   if (should_activate_prefetcher(handle_pkt)) {
     metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
   }

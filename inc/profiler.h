@@ -15,7 +15,8 @@ struct pc_profile_record {
   uint64_t miss_count = 0;
   uint64_t prefetch_issued = 0;
   uint64_t prefetch_hit = 0;
-  double estimated_amat = 0.0;
+  uint64_t total_latency = 0;            // accumulated access latency
+  double avg_amat = 0.0;                 // total_latency / access_count
   int active_replacement_policy = -1;
   int active_prefetch_policy = -1;
 };
