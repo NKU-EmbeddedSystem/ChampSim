@@ -1,0 +1,17 @@
+Description: Fix 450.soplex build failure with GCC >= 11 (C++11+)
+ std::istream::getline() returns std::istream&, not void*.
+ In C++11 the implicit void* conversion was removed, so == 0 fails.
+ Use operator! instead, which works across all C++ standards.
+Origin: manual, based on SPEC CPU2006 v1.2 450.soplex
+Bug: https://www.spec.org/cpu2006/Docs/faq.html#Build
+
+--- a/benchspec/CPU2006/450.soplex/src/mpsinput.cc
++++ b/benchspec/CPU2006/450.soplex/src/mpsinput.cc
+@@ -72,7 +72,7 @@
+       // Read until we have a not comment line.
+       do
+       {
+-         if (m_input.getline(m_buf, sizeof(m_buf)) == 0)
++         if (!m_input.getline(m_buf, sizeof(m_buf)))
+             return false;
+         m_lineno++;
