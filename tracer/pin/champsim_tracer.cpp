@@ -79,7 +79,7 @@ void ResetCurrentInstruction(VOID* ip)
   curr_instr.ip = (unsigned long long int)ip;
 }
 
-BOOL ShouldWrite()
+ADDRINT ShouldWrite()
 {
   ++instrCount;
   return (instrCount > KnobSkipInstructions.Value()) && (instrCount <= (KnobTraceInstructions.Value() + KnobSkipInstructions.Value()));
