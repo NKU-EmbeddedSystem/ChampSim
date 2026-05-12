@@ -1,8 +1,8 @@
 {
-  "executable_name": "bin/champsim_stream_d2",
+  "executable_name": "champsim_stream_d2",
   "ooo_cpu": [
     {
-      "name": "profiling_cpu",
+      "name": "cpu1",
       "frequency": 4000,
       "ifetch_buffer_size": 64,
       "decode_buffer_size": 64,
