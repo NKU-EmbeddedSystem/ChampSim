@@ -36,5 +36,9 @@ trace
 tools/profiling/data/
 
 # Pythia adapter files (ported prefetchers, keep on disk but not tracked)
-inc/pythia_adapter.h
-inc/pythia_compat.h
+
+# Profiling results (runtime output)
+tools/profiling/results/
+
+# Compiled test binaries
+tools/profiling/tests/func/mini_binary/func_test_mini
