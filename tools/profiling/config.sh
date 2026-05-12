@@ -36,12 +36,15 @@ export CTX_AFTER=4
 
 # --- Prefetch policies to evaluate ---
 # Format: "policy_name:degree1,degree2,..."
+# Ported from Pythia: stride, stream
+# ChampSim built-in: no, next_line, ip_stride, spp_dev, va_ampm_lite
+# Remaining paper prefetchers (ampm, sms, bingo, sandbox, power7,
+#   dspatch, mlop, pythia, ppf) to be built via Pythia ChampSim directly
 export PREFETCH_POLICIES=(
   "no:1"
   "next_line:1"
-  "ip_stride:1,2,3,4"
-  "spp_dev:1,2,3,4"
-  "va_ampm_lite:1,2,3,4"
+  "stride:1,2,3,4,5,6,7,8"
+  "stream:1,2,3,4,5,6,7,8"
 )
 
 # --- Load benchmark-specific configs ---
