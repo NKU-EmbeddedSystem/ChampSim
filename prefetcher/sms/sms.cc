@@ -6,7 +6,6 @@
 
 void sms::print_config()
 {
-  static bool initialized = false;
   if (!initialized) {
     pht_sets = sms_pht_size / sms_pht_assoc;
     pht.resize(pht_sets);

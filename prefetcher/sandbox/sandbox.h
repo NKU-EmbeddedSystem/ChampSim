@@ -44,6 +44,7 @@ struct sandbox : public pythia::PrefetcherAdapter {
   uint32_t sandbox_num_cycle_offsets = 4;
   uint32_t sandbox_bloom_filter_size = 2048;
   uint32_t sandbox_seed = 200;
+  bool initialized = false;
 
   void invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type,
                          std::vector<uint64_t>& pref_addr) override;

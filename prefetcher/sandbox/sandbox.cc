@@ -6,7 +6,6 @@
 
 void sandbox::print_config()
 {
-  static bool initialized = false;
   if (!initialized) {
     pref_degree = sandbox_pref_degree;
     init_evaluated_offsets();

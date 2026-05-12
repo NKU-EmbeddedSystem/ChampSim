@@ -493,7 +493,7 @@ void spp_dev::GLOBAL_REGISTER::update_entry(uint32_t pf_sig, uint32_t pf_confide
 {
   // NOTE: GHR implementation is slightly different from the original paper
   // Instead of matching (last_offset + delta), GHR simply stores and matches the pf_offset
-  uint32_t min_conf = 100, victim_way = MAX_GHR_ENTRY;
+  uint32_t min_conf = UINT32_MAX, victim_way = MAX_GHR_ENTRY;
 
   if constexpr (SPP_DEBUG_PRINT) {
     std::cout << "[GHR] Crossing the page boundary pf_sig: " << std::hex << pf_sig << std::dec;

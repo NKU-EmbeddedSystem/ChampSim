@@ -5,4 +5,3 @@
 -Wshadow
 -Wpedantic
 -Wconversion
--DHINT_PROFILING

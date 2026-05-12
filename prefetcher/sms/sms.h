@@ -56,6 +56,7 @@ struct sms : public pythia::PrefetcherAdapter {
   std::vector<std::deque<PHTEntry*>> pht;
   uint32_t pht_sets = 0;
   std::deque<uint64_t> pref_buffer;
+  bool initialized = false;
 
   // ── Overrides ─────────────────────────────────────────────────────
   void invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type,
