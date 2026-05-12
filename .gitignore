@@ -34,3 +34,7 @@ trace
 .omc/
 *.log
 tools/profiling/data/
+
+# Pythia adapter files (ported prefetchers, keep on disk but not tracked)
+inc/pythia_adapter.h
+inc/pythia_compat.h
