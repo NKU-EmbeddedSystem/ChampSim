@@ -54,16 +54,20 @@ void profiler::flush()
     return;
   flushed_ = true;
 
-  std::ofstream out;
+  // Write JSON lines to stdout when no output path is set.
+  // Use std::cout directly — redirecting an ofstream's rdbuf to
+  // std::cout.rdbuf() leaves is_open() == false on the ofstream.
+  std::ostream* out;
+  std::ofstream fout;
   if (output_path_.empty()) {
-    out.basic_ios::rdbuf(std::cout.rdbuf());
+    out = &std::cout;
   } else {
-    out.open(output_path_);
-  }
-
-  if (!out.is_open()) {
-    std::cerr << "[profiler] Warning: could not open output file '" << output_path_ << "'" << std::endl;
-    return;
+    fout.open(output_path_);
+    if (!fout.is_open()) {
+      std::cerr << "[profiler] Warning: could not open output file '" << output_path_ << "'" << std::endl;
+      return;
+    }
+    out = &fout;
   }
 
   for (const auto& [pc, rec] : records_) {
@@ -72,7 +76,7 @@ void profiler::flush()
 
     double avg_amat = rec.access_count > 0 ? static_cast<double>(rec.total_latency) / rec.access_count : 0.0;
 
-    out << "{"
+    (*out) << "{"
         << "\"pc\": \"0x" << std::hex << rec.pc << std::dec << "\", "
         << "\"access_count\": " << rec.access_count << ", "
         << "\"hit_count\": " << rec.hit_count << ", "

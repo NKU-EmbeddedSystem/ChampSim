@@ -317,16 +317,49 @@ for entry in data:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 4: Run ChampSim profiling (per trace × per prefetcher/degree)
+#   Uses per-prefetcher binaries: bin/champsim_<pref>_d<deg>
+#   Auto-detects available binaries — skip any that haven't been compiled yet.
 # ─────────────────────────────────────────────────────────────────────────────
 stage_4() {
     should_run 4 || return 0
     log "=== STAGE 4: Profiling for $BENCHMARK ==="
 
-    if [ ! -f "$CHAMPSIM_BIN" ]; then
-        log "ERROR: ChampSim binary not found at $CHAMPSIM_BIN"
-        log "  Build it: cd $CHAMPSIM_ROOT && ./config.sh champsim_config_hint_profile.json && make"
+    # Prefetcher name mapping: paper name → ChampSim internal binary name
+    # Only paper-listed prefetchers (no, next_line, stride, stream, ampm, ...).
+    # The binary is bin/champsim_<internal>_d<degree>.
+    declare -A PREFETCH_BIN_MAP=(
+        ["no"]="no"
+        ["next_line"]="next_line"
+        ["stride"]="ip_stride"          # ChampSim's stride implementation
+        ["ampm"]="va_ampm_lite"         # ChampSim's AMPM implementation
+        # ["stream"]="stream"          # not yet compiled
+    )
+
+    # Discover available per-prefetcher profiling binaries
+    declare -A pref_binaries=()  # key: "paper_name:degree" → value: binary path
+    for paper_name in "${!PREFETCH_BIN_MAP[@]}"; do
+        local bin_name="${PREFETCH_BIN_MAP[$paper_name]}"
+        shopt -s nullglob
+        for bin in "$CHAMPSIM_ROOT/bin/champsim_${bin_name}_d"*; do
+            local bname=$(basename "$bin")
+            if [[ "$bname" =~ ^champsim_${bin_name}_d([0-9]+)$ ]]; then
+                local pdeg="${BASH_REMATCH[1]}"
+                pref_binaries["${paper_name}:${pdeg}"]="$bin"
+            fi
+        done
+        shopt -u nullglob
+    done
+
+    if [ ${#pref_binaries[@]} -eq 0 ]; then
+        log "ERROR: No per-prefetcher binaries found in $CHAMPSIM_ROOT/bin/"
+        log "  Build them: cd $CHAMPSIM_ROOT && for cfg in tools/profiling/configs/champsim_*_d*.json; do ./config.sh \"\$cfg\" && make -j\$(nproc); done"
         exit 1
     fi
+
+    log "  Found ${#pref_binaries[@]} prefetcher binaries:"
+    for key in "${!pref_binaries[@]}"; do
+        log "    $key → ${pref_binaries[$key]}"
+    done
 
     ensure_dir "$PROFILING_DIR"
 
@@ -340,34 +373,90 @@ stage_4() {
         exit 1
     fi
 
+    # ── Build job list ─────────────────────────────────────────────────────
+    local -a jobs_trace=() jobs_pref=() jobs_deg=() jobs_bin=() jobs_out=()
     for trace in "${traces[@]}"; do
         local trace_name=$(basename "$trace" .champsimtrace.xz)
-
-        for policy_spec in "${PREFETCH_POLICIES[@]}"; do
-            IFS=':' read -r pref_name degrees_str <<< "$policy_spec"
-            IFS=',' read -ra degrees <<< "$degrees_str"
-
-            for degree in "${degrees[@]}"; do
-                local profile_out="$PROFILING_DIR/${trace_name}__${pref_name}__${degree}.json"
-
-                if [ -f "$profile_out" ]; then
-                    log "  Profiling output already exists: $profile_out"
-                    continue
-                fi
-
-                log "  Profiling: trace=$trace_name prefetcher=$pref_name degree=$degree"
-
-                # Run ChampSim with HINT_PROFILING, capturing stdout (JSON lines)
-                # We use a default hint file (all zeros) since profiling mode
-                # records per-PC stats regardless of hint content
-                run "${CHAMPSIM_BIN} --warmup-instructions 10000000 \
-                      --simulation-instructions 100000000 \
-                      ${trace} > ${profile_out} 2>${PROFILING_DIR}/${trace_name}__${pref_name}__${degree}.log"
-
-                log "    Output: $profile_out ($(wc -l < $profile_out) PCs)"
-            done
+        for pf_key in "${!pref_binaries[@]}"; do
+            IFS=':' read -r pref_name degree <<< "$pf_key"
+            local profile_out="$PROFILING_DIR/${trace_name}__${pref_name}__${degree}.json"
+            if [ -f "$profile_out" ]; then
+                log "  [SKIP] Already exists: ${trace_name}__${pref_name}__${degree}.json"
+                continue
+            fi
+            jobs_trace+=("$trace")
+            jobs_pref+=("$pref_name")
+            jobs_deg+=("$degree")
+            jobs_bin+=("${pref_binaries[$pf_key]}")
+            jobs_out+=("$profile_out")
         done
     done
+
+    local total_jobs=${#jobs_trace[@]}
+    if [ "$total_jobs" -eq 0 ]; then
+        log "All profiling outputs already exist. Nothing to do."
+        return 0
+    fi
+
+    log "  $total_jobs profiling jobs to run (concurrency=$JOBS)"
+
+    # ── Parallel execution with concurrency control ────────────────────────
+    local running=0 job_idx=0
+    local failfile
+    failfile=$(mktemp)
+
+    while [ "$job_idx" -lt "$total_jobs" ] || [ "$running" -gt 0 ]; do
+        # Launch new jobs while under concurrency limit
+        while [ "$job_idx" -lt "$total_jobs" ] && [ "$running" -lt "$JOBS" ]; do
+            local t="${jobs_trace[$job_idx]}"
+            local pn="${jobs_pref[$job_idx]}"
+            local pd="${jobs_deg[$job_idx]}"
+            local pb="${jobs_bin[$job_idx]}"
+            local po="${jobs_out[$job_idx]}"
+            local tn=$(basename "$t" .champsimtrace.xz)
+
+            log "  [LAUNCH] trace=$tn pref=$pn degree=$pd (slot=$((running+1))/$JOBS)"
+
+            (
+                if $DRY_RUN; then
+                    echo "[DRY-RUN] ${pb} --warmup-instructions ${PROFILE_WARMUP:-1000000} --simulation-instructions ${PROFILE_SIM:-10000000} ${t} | grep '^{' > ${po}"
+                    exit 0
+                fi
+                "${pb}" --warmup-instructions ${PROFILE_WARMUP:-1000000} \
+                    --simulation-instructions ${PROFILE_SIM:-10000000} \
+                    "${t}" 2>"${po}.log" \
+                    | grep "^{" > "${po}"
+                local ec=$?
+                if [ "$ec" -eq 0 ] && [ -s "$po" ]; then
+                    echo "[$(date '+%H:%M:%S')] [OK] ${tn}__${pn}__${pd}: $(wc -l < "$po") PCs"
+                    exit 0
+                else
+                    echo "[$(date '+%H:%M:%S')] [FAIL] ${tn}__${pn}__${pd} (exit=$ec)"
+                    echo "1" >> "$failfile"
+                    exit 1
+                fi
+            ) &
+            ((running++)) || true
+            ((job_idx++)) || true
+        done
+
+        # Wait for at least one job to finish before checking for more work
+        if [ "$running" -gt 0 ]; then
+            wait -n 2>/dev/null || true
+            ((running--)) || true
+        fi
+    done
+
+    # Drain any stragglers
+    wait
+
+    if [ -s "$failfile" ]; then
+        local failed_count
+        failed_count=$(wc -l < "$failfile")
+        rm -f "$failfile"
+        log "WARNING: $failed_count profiling job(s) failed — check .log files"
+    fi
+    rm -f "$failfile"
 
     log "Profiling complete. Results in $PROFILING_DIR"
 }
