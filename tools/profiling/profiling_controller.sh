@@ -45,13 +45,14 @@ declare -A paper_to_internal=()
 # ─── Preset groups (comma-separated paper names) ────────────────────────────
 declare -A PRESETS=(
     ["basic"]="no,next_line"
-    ["standard"]="no,next_line,ip_stride,spp_dev,va_ampm_lite"
+    ["paper"]="no,next_line,stride,stream,ampm,sms,bingo,sandbox,power7,dspatch,mlop,ppf"
+    ["standard"]="no,next_line,stride,stream,ampm,sms,bingo,sandbox,power7,dspatch,mlop,ppf,ip_stride,va_ampm_lite,spp_dev"
     ["legacy"]="no,next_line,stride,stream"
     ["full"]="__ALL__"
 )
 
 # ─── CLI defaults ────────────────────────────────────────────────────────────
-PREFETCHER_SPEC="${PREFETCHER_SPEC:-standard}"
+PREFETCHER_SPEC="${PREFETCHER_SPEC:-paper}"
 BENCHMARK_LIST=""
 STAGE="all"
 JOBS="${JOBS:-4}"
@@ -78,8 +79,8 @@ while [[ $# -gt 0 ]]; do
             echo "  (default)         Run the profiling pipeline"
             echo ""
             echo "Options:"
-            echo "  --prefetchers <spec>   e.g. \"no:1,next_line:1,ip_stride:1-4\""
-            echo "                         Presets: basic, standard, full"
+            echo "  --prefetchers <spec>   e.g. \"no,next_line,stride,ampm\""
+            echo "                         Presets: basic, paper (default), standard, full"
             echo "  --benchmarks <list>    Comma-separated (default: all with traces)"
             echo "  --stage N              Pipeline stage to run (default: all)"
             echo "  --jobs N               Concurrency (default: 4)"
@@ -373,8 +374,8 @@ cmd_status() {
 
     echo "=== Profiling Pipeline Status — $(date '+%Y-%m-%d %H:%M:%S') ==="
     echo ""
-    echo "Prefetchers available (standard preset):"
-    parse_prefetcher_spec "${PRESETS[standard]}"
+    echo "Prefetchers available (paper preset, default):"
+    parse_prefetcher_spec "${PRESETS[paper]}"
     for pname in "${!pref_degrees[@]}"; do
         local iname="${internal_of[$pname]:-$pname}"
         echo "  $pname ($iname): degrees ${pref_degrees[$pname]}"

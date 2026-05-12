@@ -1,5 +1,5 @@
 {
-  "executable_name": "champsim_spp_dev_d2",
+  "executable_name": "champsim_power7_d6",
   "block_size": 64,
   "page_size": 4096,
   "heartbeat_frequency": 10000000,
@@ -50,8 +50,8 @@
     "virtual_prefetch": true,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "spp_dev",
-      "class": "spp_dev"
+      "path": "power7",
+      "class": "power7"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -72,8 +72,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "spp_dev",
-      "class": "spp_dev"
+      "path": "power7",
+      "class": "power7"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -94,8 +94,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "spp_dev",
-      "class": "spp_dev"
+      "path": "power7",
+      "class": "power7"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -167,8 +167,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "spp_dev",
-      "class": "spp_dev"
+      "path": "power7",
+      "class": "power7"
     },
     "replacement": {
       "path": "hint_dispatch",

@@ -1,5 +1,5 @@
 {
-  "executable_name": "champsim_va_ampm_lite_d3",
+  "executable_name": "champsim_sms_d1",
   "block_size": 64,
   "page_size": 4096,
   "heartbeat_frequency": 10000000,
@@ -50,8 +50,8 @@
     "virtual_prefetch": true,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "va_ampm_lite",
-      "class": "va_ampm_lite"
+      "path": "sms",
+      "class": "sms"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -72,8 +72,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "va_ampm_lite",
-      "class": "va_ampm_lite"
+      "path": "sms",
+      "class": "sms"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -94,8 +94,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "va_ampm_lite",
-      "class": "va_ampm_lite"
+      "path": "sms",
+      "class": "sms"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -167,8 +167,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "va_ampm_lite",
-      "class": "va_ampm_lite"
+      "path": "sms",
+      "class": "sms"
     },
     "replacement": {
       "path": "hint_dispatch",

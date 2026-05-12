@@ -1,5 +1,5 @@
 {
-  "executable_name": "champsim_ip_stride_d1",
+  "executable_name": "champsim_dspatch_d32",
   "block_size": 64,
   "page_size": 4096,
   "heartbeat_frequency": 10000000,
@@ -50,8 +50,8 @@
     "virtual_prefetch": true,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "ip_stride",
-      "class": "ip_stride"
+      "path": "dspatch",
+      "class": "dspatch"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -72,8 +72,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "ip_stride",
-      "class": "ip_stride"
+      "path": "dspatch",
+      "class": "dspatch"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -94,8 +94,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "ip_stride",
-      "class": "ip_stride"
+      "path": "dspatch",
+      "class": "dspatch"
     },
     "replacement": {
       "path": "hint_dispatch",
@@ -167,8 +167,8 @@
     "virtual_prefetch": false,
     "prefetch_activate": "LOAD,PREFETCH",
     "prefetcher": {
-      "path": "ip_stride",
-      "class": "ip_stride"
+      "path": "dspatch",
+      "class": "dspatch"
     },
     "replacement": {
       "path": "hint_dispatch",

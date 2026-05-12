@@ -34,24 +34,22 @@ export WEIGHT_THRESHOLD=0.01
 export CTX_BEFORE=8
 export CTX_AFTER=4
 
-# --- Prefetch policies to evaluate (paper: 12 prefetchers) ---
+# --- Prefetch policies: 12 paper prefetchers from PORTING_STATUS.md ---
 # Format: "policy_name:degree1,degree2,..."
-# Ported to our ChampSim: stride, stream, next_line, no
-# To build via Pythia ChampSim: ampm, sms, bingo, sandbox, power7,
-#                               dspatch, mlop, pythia, ppf
+# All 12 ported from Pythia + ChampSim built-ins.
+# 12 paper prefetchers, low/med/high degree per prefetcher (3 tiers for ML training)
 export PREFETCH_POLICIES=(
   "no:1"
   "next_line:1"
-  "stride:1,2,3,4,5,6,7,8"
-  "stream:1,2,3,4,5,6,7,8"
-  "ampm:1,4,8,12,16"
-  "sms:1,4,8,12,16,20,24,28,31"
+  "stride:1,4,8"
+  "stream:1,4,8"
+  "ampm:1,4,16"
+  "sms:1,8,31"
   "bingo:1"
-  "sandbox:1,2,3,4,5,6,7,8"
-  "power7:0,1,2,3,4,5,6"
-  "dspatch:0,8,16,24,32,40,48,56,64"
-  "mlop:1,4,8,12,16"
-  "pythia:1"
+  "sandbox:1,4,8"
+  "power7:1,3,6"
+  "dspatch:8,32,64"
+  "mlop:1,8,16"
   "ppf:1"
 )
 
