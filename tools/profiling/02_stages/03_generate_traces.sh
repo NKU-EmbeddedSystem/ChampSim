@@ -124,16 +124,36 @@ log "  $pending to generate, $completed already done (concurrency=$JOBS)"
 
 BINARY_PATH="${BINARY_PATH:-}"
 if [ -z "$BINARY_PATH" ]; then
-    if [ -n "${SPEC_ROOT:-}" ]; then
-        exe_name=$(grep "exename" "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/Spec/object.pm" 2>/dev/null | grep -oP "'\K[^']*" | head -1)
-        [ -z "$exe_name" ] && exe_name=$(echo "$BENCHMARK" | sed 's/^[0-9]*\.//')
-        spec_build_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/build" -maxdepth 2 -type d -name "build_base_*" 2>/dev/null | head -1)
-        spec_run_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/run" -maxdepth 2 -type d -name "run_base_*" 2>/dev/null | head -1)
-        if [ -n "$spec_build_dir" ]; then
-            BINARY_PATH="$spec_build_dir/$exe_name"
-        elif [ -n "$spec_run_dir" ]; then
-            BINARY_PATH="$spec_run_dir/$exe_name"
-        fi
+    # Auto-detect suite from benchmark name
+    if [[ "$BENCHMARK" =~ ^4[0-9] ]]; then
+        SUITE="CPU2006"
+        SPEC_ROOT="${SPEC2006_ROOT:-${SPEC_ROOT:-}}"
+        BENCHSPEC_DIR="benchspec/CPU2006"
+        RUN_PATTERN="run_base_ref_*"
+    elif [[ "$BENCHMARK" =~ ^6[0-9].*_s$ ]]; then
+        SUITE="CPU2017"
+        SPEC_ROOT="${SPEC2017_ROOT:-}"
+        BENCHSPEC_DIR="benchspec/CPU"
+        RUN_PATTERN="run_base_refspeed_*"
+    else
+        log "ERROR: Cannot auto-detect SPEC suite for '$BENCHMARK'"
+        log "  Use BINARY_PATH=/path/to/binary for unsupported suites"
+        exit 1
+    fi
+
+    if [ -z "$SPEC_ROOT" ]; then
+        log "ERROR: SPEC($SUITE)_ROOT not set. Check tools/benchmarks/spec*/config.sh"
+        exit 1
+    fi
+
+    exe_name=$(grep "exename" "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/Spec/object.pm" 2>/dev/null | grep -oP "'\K[^']*" | head -1)
+    [ -z "$exe_name" ] && exe_name=$(echo "$BENCHMARK" | sed 's/^[0-9]*\.//')
+    spec_build_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/build" -maxdepth 2 -type d -name "build_base_*" 2>/dev/null | head -1)
+    spec_run_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/run" -maxdepth 2 -type d -name "run_base_*" 2>/dev/null | head -1)
+    if [ -n "$spec_build_dir" ]; then
+        BINARY_PATH="$spec_build_dir/$exe_name"
+    elif [ -n "$spec_run_dir" ]; then
+        BINARY_PATH="$spec_run_dir/$exe_name"
     fi
 fi
 
@@ -141,11 +161,11 @@ if [ -z "$BINARY_PATH" ] || [ ! -f "$BINARY_PATH" ]; then
     log "ERROR: SPEC binary not found. Set BINARY_PATH=/path/to/binary"
     exit 1
 fi
-log "Binary: $BINARY_PATH"
+log "Binary: $BINARY_PATH (suite=${SUITE:-override})"
 
 # SPEC run directory and args
-spec_run_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/run" \
-    -maxdepth 2 -name "run_base_ref_*" -type d 2>/dev/null | head -1)
+spec_run_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/run" \
+    -maxdepth 2 -name "$RUN_PATTERN" -type d 2>/dev/null | head -1)
 [ -z "$spec_run_dir" ] && spec_run_dir=$(dirname "$BINARY_PATH")
 
 spec_work_dir="$spec_run_dir"
@@ -155,11 +175,22 @@ if [ -f "$spec_cmd_file" ]; then
     while IFS= read -r line; do
         [[ "$line" =~ ^# ]] && continue
         [[ -z "$line" ]] && continue
+        # CPU2017: skip -E (env), -r (redirect), -N (niceness) lines
+        [[ "$line" =~ ^-[ErN] ]] && continue
         if [[ "$line" =~ ^-C ]]; then
             spec_work_dir=$(echo "$line" | sed 's/^-C //')
             continue
         fi
-        spec_args=$(echo "$line" | sed 's/-o [^ ]* //' | sed 's/-e [^ ]* //' | sed 's/^ *//' | sed -E 's/ ?[^ ]*_base\.[^ ]*//g' | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
+        # Strip -o <file>, -e <file>, -i <file>, binary path, and shell redirects
+        spec_args=$(echo "$line" \
+            | sed 's/-o [^ ]* //' \
+            | sed 's/-e [^ ]* //' \
+            | sed 's/>> [^ ]* //g' \
+            | sed 's/> [^ ]* //g' \
+            | sed 's/^ *//' \
+            | sed -E 's/ ?[^ ]*_base\.[^ ]*//g' \
+            | sed 's/  */ /g' \
+            | sed 's/^ *//;s/ *$//')
         break
     done < "$spec_cmd_file"
     log "SPEC work dir: $spec_work_dir"

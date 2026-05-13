@@ -14,10 +14,10 @@
 #   ./run_pipeline.sh --setup-only             # only run setup (no benchmark)
 #   ./run_pipeline.sh <benchmark> --jobs 8     # set concurrency
 #
-# For individual module usage, see modules/0X_*.sh
+# For individual module usage, see 02_stages/0X_*.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
 BENCHMARK="${1:-}"
@@ -44,7 +44,7 @@ done
 
 # ── Setup only ──────────────────────────────────────────────
 if $SETUP_ONLY; then
-    bash "$SCRIPT_DIR/setup.sh"
+    bash "$SCRIPT_DIR/01_setup/setup.sh"
     exit 0
 fi
 
@@ -73,7 +73,7 @@ log() { echo "[$(date '+%H:%M:%S')] [pipeline] $*"; }
 # ── Setup ───────────────────────────────────────────────────
 if $DO_SETUP; then
     log "Running environment setup..."
-    bash "$SCRIPT_DIR/setup.sh"
+    bash "$SCRIPT_DIR/01_setup/setup.sh"
 fi
 
 # Build module flags
@@ -81,7 +81,7 @@ MODULE_FLAGS=""
 $FORCE   && MODULE_FLAGS="$MODULE_FLAGS --force"
 $DRY_RUN && MODULE_FLAGS="$MODULE_FLAGS --dry-run"
 
-MODULES_DIR="$SCRIPT_DIR/modules"
+MODULES_DIR="$SCRIPT_DIR/02_stages"
 
 run_module() {
     local num="$1"

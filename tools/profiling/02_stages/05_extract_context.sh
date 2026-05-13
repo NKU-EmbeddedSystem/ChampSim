@@ -96,12 +96,12 @@ if [ -z "$selected_trace" ]; then
 fi
 
 log "Extracting Load PCs from $(basename "$selected_trace")..."
-run python3 "$SCRIPT_DIR/trace_reader.py" \
+run python3 "$SCRIPT_DIR/03_workers/trace_reader.py" \
     --trace "$selected_trace" \
     --output "$LOAD_PCS_JSON"
 
 log "Extracting assembly context (±${CTX_BEFORE}/${CTX_AFTER} instructions)..."
-run python3 "$SCRIPT_DIR/extract_assembly_context.py" \
+run python3 "$SCRIPT_DIR/03_workers/extract_assembly_context.py" \
     --index "$DISASM_INDEX" \
     --load-pcs "$LOAD_PCS_JSON" \
     --before "$CTX_BEFORE" \

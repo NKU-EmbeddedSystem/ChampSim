@@ -63,20 +63,36 @@ fi
 # Binary discovery (can override via env)
 BINARY_PATH="${BINARY_PATH:-}"
 if [ -z "$BINARY_PATH" ]; then
-    if [ -z "${SPEC_ROOT:-}" ]; then
-        log "ERROR: SPEC_ROOT not set and BINARY_PATH not provided"
-        log "  Set BINARY_PATH=/path/to/binary or configure SPEC_ROOT in config.sh"
+    # Auto-detect suite from benchmark name: 4XX → CPU2006, 6XX_s → CPU2017 speed
+    if [[ "$BENCHMARK" =~ ^4[0-9] ]]; then
+        SUITE="CPU2006"
+        SPEC_ROOT="${SPEC2006_ROOT:-${SPEC_ROOT:-}}"
+        BENCHSPEC_DIR="benchspec/CPU2006"
+    elif [[ "$BENCHMARK" =~ ^6[0-9].*_s$ ]]; then
+        SUITE="CPU2017"
+        SPEC_ROOT="${SPEC2017_ROOT:-}"
+        BENCHSPEC_DIR="benchspec/CPU"
+    else
+        log "ERROR: Cannot auto-detect SPEC suite for '$BENCHMARK'"
+        log "  Benchmark must be CPU2006 (4XX) or CPU2017 speed (6XX_s)."
+        log "  For CPU2017 rate (5XX_r), use BINARY_PATH=/path/to/binary"
         exit 1
     fi
 
-    exe_name=$(grep "exename" "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/Spec/object.pm" 2>/dev/null | grep -oP "'\K[^']*" | head -1)
+    if [ -z "$SPEC_ROOT" ]; then
+        log "ERROR: SPEC($SUITE)_ROOT not set"
+        log "  Set it in tools/benchmarks/spec*/config.sh or provide BINARY_PATH"
+        exit 1
+    fi
+
+    exe_name=$(grep "exename" "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/Spec/object.pm" 2>/dev/null | grep -oP "'\K[^']*" | head -1)
     if [ -z "$exe_name" ]; then
         exe_name=$(echo "$BENCHMARK" | sed 's/^[0-9]*\.//')
     fi
 
-    spec_build_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/build" \
+    spec_build_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/build" \
         -maxdepth 2 -type d -name "build_base_*" 2>/dev/null | head -1)
-    spec_run_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/run" \
+    spec_run_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/run" \
         -maxdepth 2 -type d -name "run_base_*" 2>/dev/null | head -1)
 
     if [ -n "$spec_build_dir" ]; then
@@ -85,7 +101,7 @@ if [ -z "$BINARY_PATH" ]; then
         BINARY_PATH="$spec_run_dir/$exe_name"
     else
         log "ERROR: No compiled binary found for $BENCHMARK"
-        log "  Build it first with SPEC or set BINARY_PATH=/path/to/binary"
+        log "  Build it with: cd $SPEC_ROOT && . ./shrc && runcpu --action=build --config=<cfg> $BENCHMARK"
         exit 1
     fi
 
@@ -99,10 +115,10 @@ if [ ! -f "$BINARY_PATH" ]; then
     exit 1
 fi
 
-log "Binary: $BINARY_PATH"
+log "Binary: $BINARY_PATH (suite=${SUITE:-override})"
 
 run mkdir -p "$BENCH_DIR"
-run python3 "$SCRIPT_DIR/parse_disassembly.py" \
+run python3 "$SCRIPT_DIR/03_workers/parse_disassembly.py" \
     --binary "$BINARY_PATH" \
     --output "$DISASM_INDEX"
 

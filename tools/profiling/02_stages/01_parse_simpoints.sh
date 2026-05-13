@@ -62,7 +62,7 @@ fi
 
 log "Parsing SimPoints for $BENCHMARK from tarball..."
 run mkdir -p "$BENCH_DIR"
-run python3 "$SCRIPT_DIR/parse_simpoints.py" \
+run python3 "$SCRIPT_DIR/03_workers/parse_simpoints.py" \
     --tarball "$SIMPOINTS_TARBALL" \
     --benchmark "$BENCHMARK" \
     --output-dir "$BENCH_DIR"

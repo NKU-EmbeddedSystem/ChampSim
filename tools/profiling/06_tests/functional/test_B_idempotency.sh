@@ -6,7 +6,7 @@ set -euo pipefail
 
 FUNC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="$(cd "$FUNC_DIR/../.." && pwd)"
-MODULES_DIR="$SCRIPT_DIR/modules"
+MODULES_DIR="$SCRIPT_DIR/02_stages"
 source "$SCRIPT_DIR/config.sh"
 
 BENCH="400.perlbench"

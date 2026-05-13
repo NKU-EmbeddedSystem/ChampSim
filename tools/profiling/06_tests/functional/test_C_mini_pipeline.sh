@@ -62,7 +62,7 @@ log ""
 log "=== STAGE 2: Disassembly ==="
 
 DISASM_INDEX="$TEST_DATA/disasm_index.json"
-python3 "$SCRIPT_DIR/parse_disassembly.py" \
+python3 "$SCRIPT_DIR/03_workers/parse_disassembly.py" \
     --binary "$MINI_BINARY" \
     --output "$DISASM_INDEX" 2>&1
 
@@ -235,7 +235,7 @@ LOAD_PCS_JSON="$TEST_DATA/load_pcs.json"
 ASSEMBLY_CTX="$TEST_DATA/assembly_context.jsonl"
 
 if [ -f "$TRACE_FILE" ]; then
-    python3 "$SCRIPT_DIR/trace_reader.py" \
+    python3 "$SCRIPT_DIR/03_workers/trace_reader.py" \
         --trace "$TRACE_FILE" --output "$LOAD_PCS_JSON" 2>&1
 
     if [ -f "$LOAD_PCS_JSON" ]; then
@@ -264,7 +264,7 @@ if len(extra) > 0:
 
     # Extract assembly context
     if [ -f "$LOAD_PCS_JSON" ]; then
-        CTX_BEFORE=8 CTX_AFTER=4 python3 "$SCRIPT_DIR/extract_assembly_context.py" \
+        CTX_BEFORE=8 CTX_AFTER=4 python3 "$SCRIPT_DIR/03_workers/extract_assembly_context.py" \
             --index "$DISASM_INDEX" --load-pcs "$LOAD_PCS_JSON" \
             --before 8 --after 4 --output "$ASSEMBLY_CTX" 2>&1
 
@@ -291,7 +291,7 @@ log "=== STAGE 6: Ground Truth ==="
 GROUND_TRUTH="$TEST_DATA/ground_truth.jsonl"
 
 if ls "$TEST_DATA/profiling/"*.json &>/dev/null 2>&1; then
-    python3 "$SCRIPT_DIR/aggregate_ground_truth.py" \
+    python3 "$SCRIPT_DIR/03_workers/aggregate_ground_truth.py" \
         --profiling-dir "$TEST_DATA/profiling" \
         --output "$GROUND_TRUTH" 2>&1
 
@@ -316,7 +316,7 @@ log "=== STAGE 7: Training Dataset ==="
 TUNING_DATASET="$TEST_DATA/tuning_dataset.jsonl"
 
 if [ -f "$ASSEMBLY_CTX" ] && [ -f "$GROUND_TRUTH" ]; then
-    python3 "$SCRIPT_DIR/build_tuning_dataset.py" \
+    python3 "$SCRIPT_DIR/03_workers/build_tuning_dataset.py" \
         --context "$ASSEMBLY_CTX" --labels "$GROUND_TRUTH" \
         --output "$TUNING_DATASET" 2>&1
 

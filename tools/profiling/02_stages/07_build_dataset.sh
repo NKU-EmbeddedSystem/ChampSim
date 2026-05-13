@@ -76,7 +76,7 @@ if [ -f "$TUNING_DATASET" ] && [ "$FORCE" != "true" ]; then
 fi
 
 log "Building tuning dataset..."
-run python3 "$SCRIPT_DIR/build_tuning_dataset.py" \
+run python3 "$SCRIPT_DIR/03_workers/build_tuning_dataset.py" \
     --context "$ASSEMBLY_CTX" \
     --labels "$GROUND_TRUTH" \
     --output "$TUNING_DATASET"

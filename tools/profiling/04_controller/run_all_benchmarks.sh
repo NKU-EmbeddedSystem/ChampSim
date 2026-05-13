@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PIPELINE="$SCRIPT_DIR/run_pipeline.sh"
 
 # Default: all benchmarks with traces ready (excluding data/batch_logs/stage_3 dirs)

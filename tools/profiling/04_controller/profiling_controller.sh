@@ -16,7 +16,7 @@
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
 # ─── Internal name → paper name mapping ──────────────────────────────────────
@@ -480,7 +480,7 @@ cmd_run() {
         echo "[$done_count/$total] $b (stage=$STAGE)"
         echo "======================================================================"
 
-        local pipeline="$SCRIPT_DIR/run_pipeline.sh"
+        local pipeline="$SCRIPT_DIR/04_controller/run_pipeline.sh"
 
         if $DRY_RUN; then
             bash "$pipeline" "$b" --stage "$STAGE" --jobs "$JOBS" --dry-run 2>&1 || true

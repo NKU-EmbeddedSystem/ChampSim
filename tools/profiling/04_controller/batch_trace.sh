@@ -3,7 +3,7 @@
 # Usage: ./batch_trace.sh [--max-benchmarks N] [--jobs-per-bench N]
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 cd "$SCRIPT_DIR"
 

@@ -2,7 +2,7 @@
 # Show PIN trace capture status for all benchmarks.
 # Usage: ./trace_status.sh [--watch]
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
 print_status() {

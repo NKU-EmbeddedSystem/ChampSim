@@ -100,7 +100,7 @@ if [ "$nonempty_count" -eq 0 ]; then
 fi
 
 log "Aggregating ${#profiling_jsons[@]} profiling outputs ($nonempty_count non-empty)..."
-run python3 "$SCRIPT_DIR/aggregate_ground_truth.py" \
+run python3 "$SCRIPT_DIR/03_workers/aggregate_ground_truth.py" \
     --profiling-dir "$PROFILING_DIR" \
     --output "$GROUND_TRUTH"
 
