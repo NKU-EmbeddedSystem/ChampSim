@@ -32,6 +32,9 @@
 #include "hint_table.h"
 #include "ooo_cpu.h" // for O3_CPU
 #include "phase_info.h"
+#ifdef HINT_PROFILING
+#include "profiler.h"
+#endif
 #include "stats_printer.h"
 #include "tracereader.h"
 #include "vmem.h"
@@ -150,6 +153,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       champsim::json_printer{json_file}.print(phase_stats);
     }
   }
+
+#ifdef HINT_PROFILING
+  profiler::instance().flush();
+#endif
 
   return 0;
 }
