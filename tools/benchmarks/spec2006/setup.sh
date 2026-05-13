@@ -100,7 +100,7 @@ step_b() {
         fi
 
         log "  Building $bench ..."
-        if run "cd $SPEC_ROOT && . ./shrc 2>/dev/null && runspec --action=build --config=$SPEC_CONFIG --tune=base $bench 2>&1 | grep -E 'Build (successes|errors|Complete)'"; then
+        if run "cd $SPEC_ROOT && . ./shrc 2>/dev/null && runspec --action=setup --size=ref --config=$SPEC_CONFIG --tune=base $bench 2>/dev/null && runspec --action=build --config=$SPEC_CONFIG --tune=base $bench 2>&1 | grep -E 'Build (successes|errors|Complete)'"; then
             :
         else
             failed+=("$bench")

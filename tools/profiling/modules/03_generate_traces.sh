@@ -145,7 +145,7 @@ log "Binary: $BINARY_PATH"
 
 # SPEC run directory and args
 spec_run_dir=$(find "$SPEC_ROOT/benchspec/CPU2006/$BENCHMARK/run" \
-    -maxdepth 2 -name "run_base_train_*" -type d 2>/dev/null | head -1)
+    -maxdepth 2 -name "run_base_ref_*" -type d 2>/dev/null | head -1)
 [ -z "$spec_run_dir" ] && spec_run_dir=$(dirname "$BINARY_PATH")
 
 spec_work_dir="$spec_run_dir"
