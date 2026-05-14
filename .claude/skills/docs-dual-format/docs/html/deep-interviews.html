@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deep Interviews — {{PROJECT_NAME}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <span class="brand">{{PROJECT_NAME}}</span>
+  <!-- AGENT: replace with the project's shared nav. See index.html AGENT comment for rules. -->
+  <a href="index.html">总览</a>
+  <a href="architecture.html">架构</a>
+  <a href="usage.html">使用指南</a>
+  <a href="design-decisions.html">设计决策</a>
+  <a href="deep-interviews.html" class="active">Deep Interviews</a>
+</nav>
+
+<h1>Deep Interview 决策记录</h1>
+<!-- AGENT: fill meta from actual interview data -->
+<p class="di-meta">
+  <span>N 次访谈</span>
+  <span>M 轮 Socratic 追问</span>
+</p>
+
+<!-- AGENT: write a 1-2 sentence intro summarizing what these interviews covered. -->
+
+<div class="di-layout">
+
+<aside class="di-toc">
+  <h3>目录</h3>
+  <!-- AGENT: populate TOC from the sections below. Use class="toc-h2" for top-level
+       headings and class="toc-h3" for sub-sections. Each link anchors to an id on
+       the corresponding .di-section or h3. -->
+  <a href="#s1" class="toc-h2">1. 章节标题</a>
+  <a href="#s1-1" class="toc-h3">1.1 子标题</a>
+</aside>
+
+<main class="di-main">
+
+<!-- AGENT: each logical topic gets a .di-section. Inside each section, use
+     .di-q (question) + .di-a (answer) pairs to present each design decision.
+     The Q represents what was asked/challenged; the A is the developer's
+     final conclusion, NOT a verbatim transcript but a refined restatement. -->
+
+<section class="di-section" id="s1">
+<h2>1. 章节标题</h2>
+
+<h3 id="s1-1">1.1 子标题</h3>
+<div class="di-q"><span class="q-label">追问</span><p class="q-text">AGENT: what question was asked or what assumption was challenged?</p></div>
+<div class="di-a"><span class="a-label">结论</span><p class="a-text">AGENT: the developer's final conclusion, paraphrased and refined. Keep the reasoning chain but express it clearly. Do NOT copy-paste raw interview transcripts.</p></div>
+
+</section>
+
+</main>
+</div>
+
+<footer>AGENT: interview source and date</footer>
+</body>
+</html>

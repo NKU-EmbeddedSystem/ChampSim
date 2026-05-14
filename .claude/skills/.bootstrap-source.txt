@@ -1,0 +1,4 @@
+repo: agent-bootstrap
+version: fcb46eb
+updated: 2026-05-14T08:29:49Z
+modules: bootstrap-core docs-dual-format eval-harness multi-run tmux

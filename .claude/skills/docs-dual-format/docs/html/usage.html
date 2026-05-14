@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>使用指南 — {{PROJECT_NAME}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <span class="brand">{{PROJECT_NAME}}</span>
+  <!-- AGENT: maintain this nav identically across ALL html pages.
+       Baseline (≤6 pages): flat <a> links with class="active" on current page.
+       When total pages > 6: group into 2-4 nav-dropdown blocks.
+       Example grouping: 开发文档 (architecture, implementation, hint-format, usage),
+       评估运维 (operations, evals), 决策记录 (design-decisions, roadmap, ...).
+       Use <div class="nav-dropdown"><span class="nav-dropdown-trigger active">...
+       <div class="nav-dropdown-menu"><a href="..." class="active">...
+       Set class="active" on both trigger AND child link for current page.
+       See skill.md "Navigation rules" for full spec. -->
+  <a href="index.html">总览</a>
+  <a href="architecture.html">架构</a>
+  <a href="usage.html" class="active">使用指南</a>
+  <a href="design-decisions.html">设计决策</a>
+  <!-- AGENT: add more pages here. Flat <a> for ≤6 total; nav-dropdown blocks for >6. -->
+</nav>
+
+<h1>使用指南</h1>
+
+<div class="toc">
+<ol>
+  <li><a href="#build">构建</a></li>
+  <li><a href="#run">运行</a></li>
+  <li><a href="#test">测试</a></li>
+  <li><a href="#docs">查看文档</a></li>
+</ol>
+</div>
+
+<h2 id="build">1. 构建</h2>
+<pre><code># 在此处补充构建命令</code></pre>
+
+<h2 id="run">2. 运行</h2>
+<pre><code># 在此处补充运行命令</code></pre>
+
+<h2 id="test">3. 测试</h2>
+<pre><code># 在此处补充测试命令</code></pre>
+
+<h2 id="docs">4. 查看文档</h2>
+<h3>启动文档服务</h3>
+<pre><code>cd <project-dir>
+python3 -m http.server 8080 -d docs/html/</code></pre>
+
+<h3>SSH 隧道（远程服务器）</h3>
+<pre><code># 在本地机器执行：
+ssh -L 8080:127.0.0.1:8080 -N user@&lt;服务器地址&gt;
+
+# 浏览器打开 http://localhost:8080</code></pre>
+
+<div class="note">
+  <strong>提示</strong>：所有 HTML 页面共享同一个 <code>style.css</code> 和导航栏。Markdown 源文件位于 <code>docs/md/</code>，内容与 HTML 页面保持对等。
+</div>
+
+<footer>{{PROJECT_NAME}} — Usage Guide</footer>
+</body>
+</html>

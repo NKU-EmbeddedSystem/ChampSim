@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>架构 — {{PROJECT_NAME}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <span class="brand">{{PROJECT_NAME}}</span>
+  <!-- AGENT: maintain this nav identically across ALL html pages.
+       Baseline (≤6 pages): flat <a> links with class="active" on current page.
+       When total pages > 6: group into 2-4 nav-dropdown blocks.
+       Example grouping: 开发文档 (architecture, implementation, hint-format, usage),
+       评估运维 (operations, evals), 决策记录 (design-decisions, roadmap, ...).
+       Use <div class="nav-dropdown"><span class="nav-dropdown-trigger active">...
+       <div class="nav-dropdown-menu"><a href="..." class="active">...
+       Set class="active" on both trigger AND child link for current page.
+       See skill.md "Navigation rules" for full spec. -->
+  <a href="index.html">总览</a>
+  <a href="architecture.html" class="active">架构</a>
+  <a href="usage.html">使用指南</a>
+  <a href="design-decisions.html">设计决策</a>
+  <!-- AGENT: add more pages here. Flat <a> for ≤6 total; nav-dropdown blocks for >6. -->
+</nav>
+
+<h1>项目架构</h1>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- INTERACTIVE DATA FLOW DIAGRAM                                  -->
+<!-- AGENT: Populate the module columns and phase step definitions  -->
+<!-- below from actual repo analysis. See inline instructions.      -->
+<!-- When the project has ≥2 modules/repos with discrete data-flow  -->
+<!-- phases, this interactive diagram is appropriate. For simple    -->
+<!-- single-repo projects, replace with a static flow-diagram.      -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<h2>数据流总览</h2>
+<p>点击 Phase 按钮观察数据在各模块之间如何流动：</p>
+
+<div class="arch-container" id="archRoot" style="position:relative;">
+  <canvas id="flowCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
+
+  <!-- Phase buttons -->
+  <!-- AGENT: Customize phase labels below. Use --ph-color and
+       --ph-color-solid to set per-phase accent colors. -->
+  <div class="arch-phases" style="position:relative;z-index:11;">
+    <button class="arch-phase-btn active" data-phase="1"
+            style="--ph-color:rgba(88,152,204,0.5);--ph-color-solid:#5898cc;">
+      Phase 1 — 标签
+    </button>
+    <button class="arch-phase-btn" data-phase="2"
+            style="--ph-color:rgba(152,120,190,0.5);--ph-color-solid:#9878be;">
+      Phase 2 — 标签
+    </button>
+    <button class="arch-phase-btn" data-phase="3"
+            style="--ph-color:rgba(212,149,40,0.5);--ph-color-solid:#d49528;">
+      Phase 3 — 标签
+    </button>
+    <button class="arch-phase-btn" data-phase="0"
+            style="--ph-color:rgba(200,200,200,0.4);--ph-color-solid:#aaa;">
+      全部连接
+    </button>
+  </div>
+
+  <!-- Step indicator panel — updates in sync with animation -->
+  <div id="stepPanel" style="
+    position:relative;z-index:11;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:.7rem 1rem; margin-bottom:1rem;
+    display:flex;align-items:center;gap:.75rem; min-height:44px;
+  ">
+    <span id="stepBadge" style="
+      font-family:var(--font-mono);font-size:.78rem;font-weight:700;
+      padding:.25em .6em;border-radius:12px;white-space:nowrap;
+    ">Step 1/3</span>
+    <span id="stepLabel" style="
+      font-size:.88rem;color:var(--text);font-weight:500;
+    ">步骤描述</span>
+    <div id="stepBar" style="
+      flex:1;height:3px;background:var(--border);border-radius:2px;overflow:hidden;
+    ">
+      <div id="stepBarFill" style="
+        height:100%;width:0%;background:var(--accent);
+        transition:width .15s linear;
+      "></div>
+    </div>
+  </div>
+
+  <!-- Module diagram: 3 columns -->
+  <div class="arch-diagram">
+    <!-- Left column: modules from repo/language A -->
+    <div class="arch-col">
+      <!-- AGENT: Replace with actual repo/language label -->
+      <div class="arch-col-label">Repo A (Language)</div>
+
+      <!-- AGENT: Add one .arch-module per module. data-mod must
+           match the IDs used in phaseSteps below.
+           Use mod-tag-cpp or mod-tag-py for language badges. -->
+      <div class="arch-module" data-mod="module-a1">
+        <span class="mod-name">ModuleName</span>
+        <span class="mod-desc">一句话职责描述</span>
+        <span class="mod-tag mod-tag-cpp">type</span>
+      </div>
+
+      <div class="arch-module" data-mod="module-a2">
+        <span class="mod-name">ModuleName</span>
+        <span class="mod-desc">一句话职责描述</span>
+        <span class="mod-tag mod-tag-cpp">type</span>
+      </div>
+    </div>
+
+    <!-- Middle column: spacer for animated canvas lines -->
+    <div class="arch-connectors"></div>
+
+    <!-- Right column: modules from repo/language B -->
+    <div class="arch-col">
+      <div class="arch-col-label">Repo B (Language)</div>
+
+      <div class="arch-module" data-mod="module-b1">
+        <span class="mod-name">ModuleName</span>
+        <span class="mod-desc">一句话职责描述</span>
+        <span class="mod-tag mod-tag-py">type</span>
+      </div>
+
+      <div class="arch-module" data-mod="module-b2">
+        <span class="mod-name">ModuleName</span>
+        <span class="mod-desc">一句话职责描述</span>
+        <span class="mod-tag mod-tag-py">type</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data nodes: shared files/artifacts between repos -->
+  <!-- AGENT: Add .arch-data-node items for each shared data
+       artifact (JSON files, binary formats, etc.) -->
+  <div style="display:flex;justify-content:center;gap:2rem;margin:1rem 0;flex-wrap:wrap;">
+    <div class="arch-data-node" data-mod="data-file-1">output_file.json</div>
+    <div class="arch-data-node" data-mod="data-file-2">output_file.bin</div>
+  </div>
+
+  <!-- Phase descriptions — shown when phase is active -->
+  <div class="arch-phase-desc visible" id="desc-phase1">
+    <!-- AGENT: Describe what happens in Phase 1, which modules are
+         involved, and what data is produced. -->
+    <strong>Phase 1: 标签</strong><br>
+    描述此阶段的数据流和涉及模块。
+  </div>
+  <div class="arch-phase-desc" id="desc-phase2">
+    <strong>Phase 2: 标签</strong><br>
+    描述此阶段的数据流和涉及模块。
+  </div>
+  <div class="arch-phase-desc" id="desc-phase3">
+    <strong>Phase 3: 标签</strong><br>
+    描述此阶段的数据流和涉及模块。
+  </div>
+  <div class="arch-phase-desc" id="desc-phase0">
+    <strong>全部连接：完整数据流</strong><br>
+    描述三个阶段的端到端数据管道全貌。
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- STATIC SECTIONS (below the interactive diagram)                -->
+<!-- AGENT: Fill these from repo analysis as usual.                -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<h2>Online / Offline 分工</h2>
+<table>
+  <tr><th></th><th>Offline</th><th>Online</th></tr>
+  <tr><td>阶段</td><td>—</td><td>—</td></tr>
+  <tr><td>目标</td><td>—</td><td>—</td></tr>
+  <tr><td>输入</td><td>—</td><td>—</td></tr>
+  <tr><td>输出</td><td>—</td><td>—</td></tr>
+</table>
+
+<h2>模块分工</h2>
+<table>
+  <tr><th>模块</th><th>职责</th><th>输入</th><th>输出</th></tr>
+  <tr><td>模块 A</td><td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>模块 B</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+
+<h2>关键 Schema</h2>
+<table>
+  <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+  <tr><td><code>—</code></td><td>—</td><td>—</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<!-- ANIMATION ENGINE — do not modify. Phase step data is defined   -->
+<!-- in the script block below; agent fills phaseSteps.            -->
+<!-- ═══════════════════════════════════════════════════════════════ -->
+
+<footer>{{PROJECT_NAME}} — Architecture</footer>
+
+<script>
+(function() {
+  // ══════════════════════════════════════════════════════════
+  // AGENT: Replace phaseColors labels and phaseSteps with
+  // actual module data-mod IDs and descriptions from your
+  // repo analysis.
+  //
+  // Phase color convention:
+  //   Phase 1: Blue   (#5898cc) — data collection / profiling
+  //   Phase 2: Purple (#9878be) — processing / training
+  //   Phase 3: Gold   (#d49528) — execution / inference
+  // ══════════════════════════════════════════════════════════
+
+  var phaseColors = {
+    '1': { stroke:'rgba(88,152,204,0.8)', glow:'rgba(88,152,204,0.18)',
+           dot:'rgba(120,190,255,0.95)', dotGlow:'rgba(88,152,204,0.3)',
+           name:'Phase 1' },
+    '2': { stroke:'rgba(152,120,190,0.8)', glow:'rgba(152,120,190,0.18)',
+           dot:'rgba(190,150,240,0.95)', dotGlow:'rgba(152,120,190,0.3)',
+           name:'Phase 2' },
+    '3': { stroke:'rgba(212,149,40,0.8)', glow:'rgba(212,149,40,0.18)',
+           dot:'rgba(240,184,64,0.95)', dotGlow:'rgba(212,149,40,0.3)',
+           name:'Phase 3' }
+  };
+
+  // AGENT: Define the step sequence for each phase.
+  // Each step: {from: 'data-mod-id', to: 'data-mod-id', label: '描述'}
+  // IDs must match data-mod attributes on .arch-module and
+  // .arch-data-node elements above.
+  var phaseSteps = {
+    '1': [
+      {from:'module-a1', to:'module-a2', label:'步骤 1.1 的描述'},
+      {from:'module-a2', to:'data-file-1', label:'步骤 1.2 的描述'}
+    ],
+    '2': [
+      {from:'data-file-1', to:'module-b1', label:'步骤 2.1 的描述'},
+      {from:'module-b1', to:'module-b2', label:'步骤 2.2 的描述'},
+      {from:'module-b2', to:'data-file-2', label:'步骤 2.3 的描述'}
+    ],
+    '3': [
+      {from:'data-file-2', to:'module-a1', label:'步骤 3.1 的描述'},
+      {from:'module-a1', to:'module-a2', label:'步骤 3.2 的描述'}
+    ]
+  };
+
+  // AGENT: Define which modules to highlight per phase.
+  // Use the same data-mod IDs.
+  var highlightModules = {
+    '1': ['module-a1', 'module-a2', 'data-file-1'],
+    '2': ['data-file-1', 'module-b1', 'module-b2', 'data-file-2'],
+    '3': ['data-file-2', 'module-a1', 'module-a2']
+  };
+
+  // ══════════════════════════════════════════════════════════
+  // Animation engine — no changes needed below this line.
+  // ══════════════════════════════════════════════════════════
+
+  var buttons = document.querySelectorAll('.arch-phase-btn');
+  var modules = document.querySelectorAll('.arch-module, .arch-data-node');
+  var canvas = document.getElementById('flowCanvas');
+  var ctx = canvas.getContext('2d');
+  var archRoot = document.getElementById('archRoot');
+
+  var currentPhase = '1';
+  var steps = [];
+  var activeConnections = [];
+  var animStep = 0;
+  var stepProgress = 0;
+  var stepPhase = 'travel';
+  var pauseTimer = 0;
+  var PAUSE_FRAMES = 50;
+  var DOT_SPEED = 0.018;
+  var animFrame;
+
+  var stepBadge = document.getElementById('stepBadge');
+  var stepLabelEl = document.getElementById('stepLabel');
+  var stepBarFill = document.getElementById('stepBarFill');
+
+  function resizeCanvas() {
+    var rect = archRoot.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+  }
+
+  function getCenter(el) {
+    var rect = el.getBoundingClientRect();
+    var canvasRect = canvas.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width/2 - canvasRect.left,
+      y: rect.top + rect.height/2 - canvasRect.top
+    };
+  }
+
+  function resolveStep(step, color) {
+    var fromEl = document.querySelector('[data-mod="' + step.from + '"]');
+    var toEl = document.querySelector('[data-mod="' + step.to + '"]');
+    if (!fromEl || !toEl) return null;
+    return {
+      from: getCenter(fromEl),
+      to: getCenter(toEl),
+      label: step.label,
+      color: color
+    };
+  }
+
+  function buildPhaseChain(phase) {
+    if (phase === '0') {
+      var all = [];
+      ['1','2','3'].forEach(function(p) {
+        var color = phaseColors[p];
+        (phaseSteps[p] || []).forEach(function(s) {
+          var resolved = resolveStep(s, color);
+          if (resolved) all.push(resolved);
+        });
+      });
+      return all;
+    }
+    var color = phaseColors[phase];
+    if (!color) return [];
+    return (phaseSteps[phase] || []).map(function(s) {
+      return resolveStep(s, color);
+    }).filter(Boolean);
+  }
+
+  function resetAnimation() {
+    activeConnections = [];
+    animStep = 0;
+    stepProgress = 0;
+    stepPhase = 'travel';
+    pauseTimer = 0;
+    steps = buildPhaseChain(currentPhase);
+  }
+
+  function drawConn(from, to, color, alpha) {
+    var dx = to.x - from.x;
+    var dy = to.y - from.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    var ux = dx/dist, uy = dy/dist;
+
+    ctx.globalAlpha = alpha * 0.25;
+    ctx.strokeStyle = color.glow;
+    ctx.lineWidth = 7;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.strokeStyle = color.stroke;
+    ctx.lineWidth = 2.2;
+    ctx.setLineDash([9, 5]);
+    ctx.lineDashOffset = 0;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+
+    ctx.globalAlpha = alpha;
+    ctx.setLineDash([]);
+    var ax = to.x - ux * 12;
+    var ay = to.y - uy * 12;
+    ctx.fillStyle = color.stroke;
+    ctx.beginPath();
+    ctx.moveTo(to.x, to.y);
+    ctx.lineTo(ax - uy*5, ay + ux*5);
+    ctx.lineTo(ax + uy*5, ay - ux*5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+  }
+
+  function drawDot(from, to, color, progress) {
+    var dx = to.x - from.x;
+    var dy = to.y - from.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    var ux = dx/dist, uy = dy/dist;
+    var dotX = from.x + ux * dist * progress;
+    var dotY = from.y + uy * dist * progress;
+
+    ctx.fillStyle = color.dotGlow;
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, 9, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = color.dot;
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, 4.5, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, 1.8, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function updateStepPanel() {
+    if (steps.length === 0) {
+      stepBadge.textContent = '';
+      stepLabelEl.textContent = '';
+      stepBarFill.style.width = '0%';
+      return;
+    }
+    if (animStep < steps.length) {
+      var cur = steps[animStep];
+      stepBadge.textContent = 'Step ' + (animStep+1) + '/' + steps.length;
+      stepBadge.style.background = cur.color.glow;
+      stepBadge.style.color = cur.color.dot;
+      stepBadge.style.border = '1px solid ' + cur.color.stroke;
+      stepLabelEl.textContent = cur.label;
+      stepLabelEl.style.color = '';
+      stepBarFill.style.width = (stepProgress * 100) + '%';
+      stepBarFill.style.background = cur.color.stroke;
+    } else {
+      stepBadge.textContent = 'Done';
+      stepBadge.style.background = '';
+      stepBadge.style.color = '';
+      stepBadge.style.border = '';
+      stepLabelEl.textContent = '本轮完成，即将重放';
+      stepLabelEl.style.color = 'var(--muted)';
+      stepBarFill.style.width = '100%';
+    }
+  }
+
+  function draw() {
+    resizeCanvas();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    activeConnections.forEach(function(conn) {
+      drawConn(conn.from, conn.to, conn.color, 1);
+    });
+
+    if (animStep < steps.length) {
+      var cur = steps[animStep];
+
+      if (stepPhase === 'travel') {
+        stepProgress += DOT_SPEED;
+        if (stepProgress >= 1) {
+          stepProgress = 1;
+          activeConnections.push({
+            from: cur.from, to: cur.to, color: cur.color, label: cur.label
+          });
+          stepPhase = 'pause';
+          pauseTimer = 0;
+        }
+        drawConn(cur.from, cur.to, cur.color, 0.45);
+        drawDot(cur.from, cur.to, cur.color, stepProgress);
+      } else if (stepPhase === 'pause') {
+        drawConn(cur.from, cur.to, cur.color, 1);
+        drawDot(cur.from, cur.to, cur.color, 1);
+        pauseTimer++;
+        if (pauseTimer >= PAUSE_FRAMES) {
+          animStep++;
+          stepProgress = 0;
+          stepPhase = 'travel';
+          if (animStep >= steps.length && steps.length > 0) {
+            stepPhase = 'pause';
+            pauseTimer = -(PAUSE_FRAMES * 2);
+          }
+          if (animStep >= steps.length && pauseTimer >= 0) {
+            activeConnections = [];
+            animStep = 0;
+            stepProgress = 0;
+            stepPhase = 'travel';
+          }
+        }
+      }
+    }
+
+    updateStepPanel();
+    animFrame = requestAnimationFrame(draw);
+  }
+
+  function setPhase(phase) {
+    currentPhase = phase;
+    buttons.forEach(function(b) {
+      b.classList.toggle('active', b.dataset.phase === phase);
+    });
+    modules.forEach(function(m) { m.classList.remove('highlight'); });
+    if (phase === '0') {
+      modules.forEach(function(m) { m.classList.add('highlight'); });
+    } else {
+      (highlightModules[phase] || []).forEach(function(id) {
+        var el = document.querySelector('[data-mod="' + id + '"]');
+        if (el) el.classList.add('highlight');
+      });
+    }
+    document.querySelectorAll('.arch-phase-desc').forEach(function(d) {
+      d.classList.remove('visible');
+    });
+    var desc = document.getElementById('desc-phase' + phase);
+    if (desc) desc.classList.add('visible');
+    resetAnimation();
+  }
+
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      setPhase(this.dataset.phase);
+    });
+  });
+
+  window.addEventListener('resize', function() {
+    resizeCanvas();
+    steps = buildPhaseChain(currentPhase);
+  });
+
+  resizeCanvas();
+  setPhase('1');
+  animFrame = requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

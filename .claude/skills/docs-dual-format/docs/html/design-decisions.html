@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设计决策 — {{PROJECT_NAME}}</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <span class="brand">{{PROJECT_NAME}}</span>
+  <!-- AGENT: maintain this nav identically across ALL html pages.
+       Baseline (≤6 pages): flat <a> links with class="active" on current page.
+       When total pages > 6: group into 2-4 nav-dropdown blocks.
+       Example grouping: 开发文档 (architecture, implementation, hint-format, usage),
+       评估运维 (operations, evals), 决策记录 (design-decisions, roadmap, ...).
+       Use <div class="nav-dropdown"><span class="nav-dropdown-trigger active">...
+       <div class="nav-dropdown-menu"><a href="..." class="active">...
+       Set class="active" on both trigger AND child link for current page.
+       See skill.md "Navigation rules" for full spec. -->
+  <a href="index.html">总览</a>
+  <a href="architecture.html">架构</a>
+  <a href="usage.html">使用指南</a>
+  <a href="design-decisions.html" class="active">设计决策</a>
+  <!-- AGENT: add more pages here. Flat <a> for ≤6 total; nav-dropdown blocks for >6. -->
+</nav>
+
+<h1>设计决策（ADR）</h1>
+
+<div class="note">
+  <strong>ADR-001：决策标题</strong>
+  <p><strong>决策</strong>：描述做出的决策。</p>
+  <p><strong>备选方案</strong>：考虑过的其他方案。</p>
+  <p><strong>拒绝原因</strong>：为什么备选方案不可行。</p>
+  <p><strong>后果</strong>：此决策带来的影响。</p>
+</div>
+
+<div class="note">
+  <strong>ADR-002：决策标题</strong>
+  <p><strong>决策</strong>：描述做出的决策。</p>
+  <p><strong>备选方案</strong>：—</p>
+  <p><strong>拒绝原因</strong>：—</p>
+  <p><strong>后果</strong>：—</p>
+</div>
+
+<footer>{{PROJECT_NAME}} — Design Decisions</footer>
+</body>
+</html>

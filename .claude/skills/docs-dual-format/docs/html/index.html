@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{PROJECT_NAME}} — 项目总览</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav>
+  <span class="brand">{{PROJECT_NAME}}</span>
+  <!-- AGENT: maintain this nav identically across ALL html pages.
+       Baseline (≤6 pages): flat <a> links with class="active" on current page.
+       When total pages > 6: group into 2-4 nav-dropdown blocks.
+       Example grouping: 开发文档 (architecture, implementation, hint-format, usage),
+       评估运维 (operations, evals), 决策记录 (design-decisions, roadmap, ...).
+       Use <div class="nav-dropdown"><span class="nav-dropdown-trigger active">...
+       <div class="nav-dropdown-menu"><a href="..." class="active">...
+       Set class="active" on both trigger AND child link for current page.
+       See skill.md "Navigation rules" for full spec. -->
+  <a href="index.html" class="active">总览</a>
+  <a href="architecture.html">架构</a>
+  <a href="usage.html">使用指南</a>
+  <a href="design-decisions.html">设计决策</a>
+  <!-- AGENT: add more pages here. Flat <a> for ≤6 total; nav-dropdown blocks for >6. -->
+</nav>
+
+<h1>{{PROJECT_NAME}}</h1>
+<p><strong>项目简述</strong><br><span style="color:var(--muted)">补充一句话描述项目的核心目标</span></p>
+
+<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0 2rem;">
+  <span class="badge badge-done">Core Bootstrap ✓</span>
+  <span class="badge badge-todo">待补充状态</span>
+</div>
+
+<div class="status-grid">
+  <div class="status-card">
+    <h3 style="margin-top:0">核心指标</h3>
+    <table style="margin:0">
+      <tr><td style="border:none;color:var(--muted)">指标 1</td><td style="border:none">—</td></tr>
+      <tr><td style="border:none;color:var(--muted)">指标 2</td><td style="border:none">—</td></tr>
+    </table>
+  </div>
+  <div class="status-card">
+    <h3 style="margin-top:0">Pipeline</h3>
+    <table style="margin:0">
+      <tr><td style="border:none;color:var(--muted)">Stage 1</td><td style="border:none"><span class="badge badge-todo">—</span> 待定义</td></tr>
+    </table>
+  </div>
+</div>
+
+<h2>快速导航</h2>
+<div class="toc">
+<ol>
+  <li><a href="architecture.html">项目架构</a> — 整体架构图、数据流、模块分工</li>
+  <li><a href="usage.html">使用指南</a> — 构建、运行、测试命令</li>
+  <li><a href="design-decisions.html">设计决策</a> — 核心 ADR 及其理由</li>
+</ol>
+</div>
+
+<h2>链接</h2>
+<table>
+  <tr><td style="width:200px">Markdown 文档</td><td><code><a href="../md/OVERVIEW.md">docs/md/</a></code></td></tr>
+</table>
+
+<footer>生成自 agent-bootstrap docs-dual-format 模块</footer>
+</body>
+</html>
