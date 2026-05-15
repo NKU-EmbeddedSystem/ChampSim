@@ -4,12 +4,36 @@ pref_hint_dispatch::pref_hint_dispatch(CACHE* cache)
     : prefetcher(cache), no_prefetcher(cache), next_line_prefetcher(cache), ip_stride_prefetcher(cache), spp_dev_prefetcher(cache),
       va_ampm_lite_prefetcher(cache)
 {
+  // Instantiate the context extractor based on the compile-time CONTEXT_FEATURE
+  if constexpr (context_feature_ == ContextFeature::PAGE_OFFSET) {
+    context_extractor_ = std::make_unique<PageOffsetExtractor>();
+  } else if constexpr (context_feature_ == ContextFeature::DELTA_SIGNATURE) {
+    context_extractor_ = std::make_unique<DeltaSignatureExtractor>();
+  } else if constexpr (context_feature_ == ContextFeature::RECENT_PC_HASH) {
+    context_extractor_ = std::make_unique<RecentPCHashExtractor>();
+  } else if constexpr (context_feature_ == ContextFeature::COMPOSITE) {
+    context_extractor_ = std::make_unique<CompositeExtractor>();
+  }
+  // NONE: context_extractor_ remains nullptr, skipping two-level lookup entirely
 }
 
 uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch,
                                                  access_type type, uint32_t metadata_in)
 {
-  const hint_entry* hint = hint_table::instance().lookup(ip.to<uint64_t>());
+  // Two-level hint lookup: compute context key then try context-specific hint
+  uint64_t context_key = 0;
+  if (context_extractor_) {
+    context_key = context_extractor_->compute_context(ip.to<uint64_t>(), addr);
+    context_extractor_->update_state(ip.to<uint64_t>(), addr);
+  }
+
+  const hint_entry* hint = nullptr;
+  if (context_key != 0 || context_feature_ != ContextFeature::NONE) {
+    hint = hint_table::instance().lookup_with_context(ip.to<uint64_t>(), context_key);
+  }
+  if (!hint) {
+    hint = hint_table::instance().lookup(ip.to<uint64_t>());
+  }
   int idx = hint ? hint->prefetch_policy_index : hint_table::instance().get_default_prefetch();
 
   uint32_t metadata = metadata_in;
@@ -57,4 +81,5 @@ void pref_hint_dispatch::prefetcher_cycle_operate()
 void pref_hint_dispatch::prefetcher_final_stats()
 {
   spp_dev_prefetcher.prefetcher_final_stats();
+  hint_table::instance().print_diagnostics();
 }

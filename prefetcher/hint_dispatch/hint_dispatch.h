@@ -13,6 +13,22 @@
 #include "../spp_dev/spp_dev.h"
 #include "../va_ampm_lite/va_ampm_lite.h"
 
+// Context extraction for two-level hint lookup
+#include "context_extractors.h"
+#include <memory>
+
+#ifndef CONTEXT_FEATURE
+#define CONTEXT_FEATURE 0
+#endif
+
+enum class ContextFeature {
+    NONE = 0,
+    PAGE_OFFSET = 1,
+    DELTA_SIGNATURE = 2,
+    RECENT_PC_HASH = 3,
+    COMPOSITE = 4,
+};
+
 // hint_dispatch is a standalone prefetcher module that wraps an ensemble of
 // 5 sub-prefetchers and dispatches to the selected one based on a PC-keyed
 // hint table lookup. Metadata from the selected sub-prefetcher is returned
@@ -35,6 +51,12 @@ class pref_hint_dispatch : public champsim::modules::prefetcher
 
   // Last selected index for cycle_operate() dispatch
   int last_selected_index = 0;
+
+  // Compile-time context feature selection (set via -DCONTEXT_FEATURE=X)
+  static constexpr ContextFeature context_feature_ = static_cast<ContextFeature>(CONTEXT_FEATURE);
+
+  // Context extractor for two-level hint lookup (nullptr for baseline NONE)
+  std::unique_ptr<ContextExtractor> context_extractor_;
 
 public:
   explicit pref_hint_dispatch(CACHE* cache);
