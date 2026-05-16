@@ -42,6 +42,9 @@ SIMPOINTS_JSON="$BENCH_DIR/simpoints.json"
 TRACES_DIR="$BENCH_DIR/traces"
 MODULE_NAME="[03_traces]"
 
+XZ_THREADS="${XZ_TRACE_THREADS:-1}"           # per-trace xz threads (avoid oversubscription)
+XZ_LOCKFILE="$TRACES_DIR/.xz_compression.lock"  # serialize xz to avoid I/O thrashing
+
 log()  { echo "[$(date '+%H:%M:%S')] $MODULE_NAME $*"; }
 run()  {
     if $DRY_RUN; then
@@ -120,32 +123,33 @@ fi
 
 log "  $pending to generate, $completed already done (concurrency=$JOBS)"
 
-# ── Phase 2: Binary discovery (only needed for pending traces) ──
+# ── Phase 2: Suite auto-detection + Binary discovery ──
 
+# Auto-detect SPEC suite from benchmark name (always, even if BINARY_PATH is set)
+if [[ "$BENCHMARK" =~ ^4[0-9] ]]; then
+    SUITE="CPU2006"
+    SPEC_ROOT="${SPEC2006_ROOT:-${SPEC_ROOT:-}}"
+    BENCHSPEC_DIR="benchspec/CPU2006"
+    RUN_PATTERN="run_base_ref_*"
+elif [[ "$BENCHMARK" =~ ^6[0-9].*_s$ ]]; then
+    SUITE="CPU2017"
+    SPEC_ROOT="${SPEC2017_ROOT:-}"
+    BENCHSPEC_DIR="benchspec/CPU"
+    RUN_PATTERN="run_base_refspeed_*"
+else
+    log "ERROR: Cannot auto-detect SPEC suite for '$BENCHMARK'"
+    log "  Use BINARY_PATH=/path/to/binary for unsupported suites"
+    exit 1
+fi
+
+if [ -z "$SPEC_ROOT" ]; then
+    log "ERROR: SPEC($SUITE)_ROOT not set. Check tools/benchmarks/spec*/config.sh"
+    exit 1
+fi
+
+# Discover binary if not explicitly provided
 BINARY_PATH="${BINARY_PATH:-}"
 if [ -z "$BINARY_PATH" ]; then
-    # Auto-detect suite from benchmark name
-    if [[ "$BENCHMARK" =~ ^4[0-9] ]]; then
-        SUITE="CPU2006"
-        SPEC_ROOT="${SPEC2006_ROOT:-${SPEC_ROOT:-}}"
-        BENCHSPEC_DIR="benchspec/CPU2006"
-        RUN_PATTERN="run_base_ref_*"
-    elif [[ "$BENCHMARK" =~ ^6[0-9].*_s$ ]]; then
-        SUITE="CPU2017"
-        SPEC_ROOT="${SPEC2017_ROOT:-}"
-        BENCHSPEC_DIR="benchspec/CPU"
-        RUN_PATTERN="run_base_refspeed_*"
-    else
-        log "ERROR: Cannot auto-detect SPEC suite for '$BENCHMARK'"
-        log "  Use BINARY_PATH=/path/to/binary for unsupported suites"
-        exit 1
-    fi
-
-    if [ -z "$SPEC_ROOT" ]; then
-        log "ERROR: SPEC($SUITE)_ROOT not set. Check tools/benchmarks/spec*/config.sh"
-        exit 1
-    fi
-
     exe_name=$(grep "exename" "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/Spec/object.pm" 2>/dev/null | grep -oP "'\K[^']*" | head -1)
     [ -z "$exe_name" ] && exe_name=$(echo "$BENCHMARK" | sed 's/^[0-9]*\.//')
     spec_build_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/build" -maxdepth 2 -type d -name "build_base_*" 2>/dev/null | head -1)
@@ -161,7 +165,7 @@ if [ -z "$BINARY_PATH" ] || [ ! -f "$BINARY_PATH" ]; then
     log "ERROR: SPEC binary not found. Set BINARY_PATH=/path/to/binary"
     exit 1
 fi
-log "Binary: $BINARY_PATH (suite=${SUITE:-override})"
+log "Binary: $BINARY_PATH (suite=$SUITE)"
 
 # SPEC run directory and args
 spec_run_dir=$(find "$SPEC_ROOT/$BENCHSPEC_DIR/$BENCHMARK/run" \
@@ -232,7 +236,7 @@ for i in "${!sids[@]}"; do
         pin_cmd="${PIN_ROOT}/pin -t ${PIN_TRACER} -o ${trace_out} -s ${start} -t ${INTERVAL_SIZE} -- ${BINARY_PATH} ${spec_args}"
         if $DRY_RUN; then
             echo "[DRY-RUN] cd ${spec_work_dir} && $pin_cmd"
-            echo "[DRY-RUN] xz -T0 ${trace_out}"
+            echo "[DRY-RUN] xz -T${XZ_THREADS} ${trace_out} && xz -t ${trace_out}.xz"
             exit 0
         fi
 
@@ -249,9 +253,21 @@ for i in "${!sids[@]}"; do
 
         if [ $? -eq 0 ] && [ -f "$trace_out" ]; then
             echo "[$(date '+%H:%M:%S')] [PIN:$sid] Trace done, compressing..."
-            xz -T0 "$trace_out"
-            echo "[$(date '+%H:%M:%S')] [PIN:$sid] Compressed → ${trace_out}.xz"
-            exit 0
+            # Serialize xz compression to avoid I/O thrashing when many traces finish together
+            if flock "$XZ_LOCKFILE" xz -T"${XZ_THREADS}" "$trace_out"; then
+                if xz -t "${trace_out}.xz" > /dev/null 2>&1; then
+                    echo "[$(date '+%H:%M:%S')] [PIN:$sid] Compressed → ${trace_out}.xz"
+                    exit 0
+                else
+                    echo "[$(date '+%H:%M:%S')] [PIN:$sid] FAILED: compressed trace is corrupt"
+                    echo "1" >> "$failfile"
+                    exit 1
+                fi
+            else
+                echo "[$(date '+%H:%M:%S')] [PIN:$sid] FAILED: xz compression failed (exit=$?)"
+                echo "1" >> "$failfile"
+                exit 1
+            fi
         else
             echo "[$(date '+%H:%M:%S')] [PIN:$sid] FAILED"
             echo "1" >> "$failfile"

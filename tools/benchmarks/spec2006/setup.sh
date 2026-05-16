@@ -35,7 +35,11 @@ run()  {
         echo "[DRY-RUN] $*"
     else
         log "Running: $*"
-        eval "$@"
+        if [ $# -eq 1 ]; then
+            eval "$1"
+        else
+            "$@"
+        fi
     fi
 }
 should_run() { [ "$STEP" = "all" ] || [ "$STEP" = "$1" ]; }

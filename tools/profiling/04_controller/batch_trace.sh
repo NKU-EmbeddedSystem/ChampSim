@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run Stage 3 (PIN trace) for all SPEC2006 benchmarks with compiled binaries.
-# Usage: ./batch_trace.sh [--max-benchmarks N] [--jobs-per-bench N]
+# Usage: ./batch_trace.sh [--max-benchmarks N] [--jobs-per-bench N] [--max-parallel N] [--stagger-delay S] [--min-free-mem-mb M]
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,15 +14,21 @@ BENCHMARKS=(
   470.lbm 471.omnetpp 473.astar 483.xalancbmk
 )
 
-MAX_BENCHMARKS=0    # 0 = unlimited
+MAX_BENCHMARKS=0          # 0 = unlimited
 JOBS_PER_BENCH=2
+MAX_PARALLEL_BENCHES=2    # limit concurrent benchmarks to avoid memory exhaustion
+STAGGER_DELAY=3           # seconds between launches to avoid thundering herd
+MIN_FREE_MEM_MB=4096      # warn if free memory is below this threshold
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --max-benchmarks) MAX_BENCHMARKS="$2"; shift 2 ;;
-    --jobs-per-bench) JOBS_PER_BENCH="$2"; shift 2 ;;
-    --dry-run) DRY_RUN=true; shift ;;
+    --max-benchmarks)      MAX_BENCHMARKS="$2"; shift 2 ;;
+    --jobs-per-bench)      JOBS_PER_BENCH="$2"; shift 2 ;;
+    --max-parallel)        MAX_PARALLEL_BENCHES="$2"; shift 2 ;;
+    --stagger-delay)       STAGGER_DELAY="$2"; shift 2 ;;
+    --min-free-mem-mb)     MIN_FREE_MEM_MB="$2"; shift 2 ;;
+    --dry-run)             DRY_RUN=true; shift ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
@@ -37,11 +43,11 @@ for bench in "${BENCHMARKS[@]}"; do
     log "  [SKIP] $bench — run dir already exists"
     continue
   fi
-  log "  [SETUP] $bench — runspec --action=setup --size=train"
+  log "  [SETUP] $bench — runspec --action=setup --size=ref"
   if $DRY_RUN; then
-    echo "[DRY-RUN] cd $SPEC_ROOT && . ./shrc && runspec --action=setup --config=linux64-amd64-gcc-fortify0.cfg --tune=base --size=train $bench"
+    echo "[DRY-RUN] cd $SPEC_ROOT && . ./shrc && runspec --action=setup --config=linux64-amd64-gcc-fortify0.cfg --tune=base --size=ref $bench"
   else
-    ( cd "$SPEC_ROOT" && . ./shrc && runspec --action=setup --config=linux64-amd64-gcc-fortify0.cfg --tune=base --size=train "$bench" 2>&1 | tail -1 )
+    ( cd "$SPEC_ROOT" && . ./shrc && runspec --action=setup --config=linux64-amd64-gcc-fortify0.cfg --tune=base --size=ref "$bench" 2>&1 | tail -1 )
   fi
 done
 
@@ -56,10 +62,10 @@ for bench in "${BENCHMARKS[@]}"; do
   fi
   log "  [PREP] $bench — Running stages 1+2..."
   if $DRY_RUN; then
-    echo "[DRY-RUN] ./run_pipeline.sh $bench --stage 1 && ./run_pipeline.sh $bench --stage 2"
+    echo "[DRY-RUN] ./04_controller/run_pipeline.sh $bench --stage 1 && ./04_controller/run_pipeline.sh $bench --stage 2"
   else
-    ./run_pipeline.sh "$bench" --stage 1 2>&1 | tail -1
-    ./run_pipeline.sh "$bench" --stage 2 2>&1 | tail -1
+    ./04_controller/run_pipeline.sh "$bench" --stage 1 2>&1 | tail -1
+    ./04_controller/run_pipeline.sh "$bench" --stage 2 2>&1 | tail -1
   fi
 done
 
@@ -78,19 +84,31 @@ for bench in "${BENCHMARKS[@]}"; do
   log "  $bench → ${BINARIES[$bench]}"
 done
 
-# ── Step 3: Launch Stage 3 for each benchmark in parallel ─────────────
+# ── Step 3: Launch Stage 3 for each benchmark with concurrency control ──
 LOG_DIR="$DATA_ROOT/batch_logs"
 mkdir -p "$LOG_DIR"
 
 BATCH_FAILFILE=$(mktemp)
 launched=0
+running=0
+
+# Helper: get free memory in MB (cross-distro, reads /proc/meminfo)
+get_free_mem_mb() {
+  awk '/^(MemAvailable|MemFree):/ { print int($2/1024); exit }' /proc/meminfo 2>/dev/null || echo 0
+}
 
 log "=== Phase 2: Stage 3 (Parallel PIN Trace) ==="
+log "  max benchmarks total: ${MAX_BENCHMARKS:-unlimited}"
+log "  max concurrent benches: $MAX_PARALLEL_BENCHES"
+log "  jobs per bench: $JOBS_PER_BENCH"
+log "  stagger delay: ${STAGGER_DELAY}s"
+log "  min free memory: ${MIN_FREE_MEM_MB}MB"
+log ""
+
 for bench in "${BENCHMARKS[@]}"; do
   bin="${BINARIES[$bench]:-}"
   [ -z "$bin" ] && continue
 
-  traces_xz=$(find "$DATA_ROOT/$bench/traces" -name "*.xz" 2>/dev/null | wc -l || echo 0)
   simpoints_count=$(python3 -c "
 import json
 data = json.load(open('$DATA_ROOT/$bench/simpoints.json'))
@@ -119,20 +137,39 @@ for e in data:
     continue
   fi
 
-  log "  [LAUNCH] $bench ($completed_count/$simpoints_count done, launching remaining)"
+  # ── Concurrency limiter: wait for a slot to open ──
+  while [ "$running" -ge "$MAX_PARALLEL_BENCHES" ]; do
+    wait -n 2>/dev/null || true
+    ((running--)) || true
+  done
+
+  # ── Memory check: warn if free memory is low ──
+  free_mem=$(get_free_mem_mb)
+  if [ "$free_mem" -lt "$MIN_FREE_MEM_MB" ]; then
+    log "  [WARN] $bench: free memory low (${free_mem}MB < ${MIN_FREE_MEM_MB}MB), waiting for a running job to finish..."
+    wait -n 2>/dev/null || true
+    ((running--)) || true
+  fi
+
+  log "  [LAUNCH] $bench ($completed_count/$simpoints_count done, launching remaining, free_mem=${free_mem}MB)"
   (
     export BINARY_PATH="$bin"
     export SPEC_ROOT="$SPEC_ROOT"
-    if ./run_pipeline.sh "$bench" --stage 3 --jobs "$JOBS_PER_BENCH" > "$LOG_DIR/${bench}.log" 2>&1; then
+    if ./04_controller/run_pipeline.sh "$bench" --stage 3 --jobs "$JOBS_PER_BENCH" > "$LOG_DIR/${bench}.log" 2>&1; then
       log "  [DONE] $bench — all traces complete"
     else
       log "  [FAIL] $bench — check $LOG_DIR/${bench}.log"
       echo "1" >> "$BATCH_FAILFILE"
     fi
   ) &
+  ((running++))
   ((launched++))
 
+  # ── Stop if we've hit the max benchmarks limit ──
   [ "$MAX_BENCHMARKS" -gt 0 ] && [ "$launched" -ge "$MAX_BENCHMARKS" ] && break
+
+  # ── Stagger launches to avoid thundering herd ──
+  sleep "$STAGGER_DELAY"
 done
 
 log "Launched $launched benchmarks in background"
