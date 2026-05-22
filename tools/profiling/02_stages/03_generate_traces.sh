@@ -189,8 +189,8 @@ if [ -f "$spec_cmd_file" ]; then
         spec_args=$(echo "$line" \
             | sed 's/-o [^ ]* //' \
             | sed 's/-e [^ ]* //' \
-            | sed 's/>> [^ ]* //g' \
-            | sed 's/> [^ ]* //g' \
+            | sed -E 's/[12]?>> ?[^ ]*//g' \
+            | sed -E 's/> ?[^ ]*//g' \
             | sed 's/^ *//' \
             | sed -E 's/ ?[^ ]*_base\.[^ ]*//g' \
             | sed 's/  */ /g' \
@@ -233,7 +233,7 @@ for i in "${!sids[@]}"; do
     log "  [LAUNCH] SimPoint $sid (weight=$weight, start=$start, slot=$((running+1))/$JOBS)"
 
     (
-        pin_cmd="${PIN_ROOT}/pin -t ${PIN_TRACER} -o ${trace_out} -s ${start} -t ${INTERVAL_SIZE} -- ${BINARY_PATH} ${spec_args}"
+        pin_cmd="${PIN_ROOT}/pin -t ${PIN_TRACER} -o ${trace_out} -s ${start} -t ${TRACE_LENGTH} -- ${BINARY_PATH} ${spec_args}"
         if $DRY_RUN; then
             echo "[DRY-RUN] cd ${spec_work_dir} && $pin_cmd"
             echo "[DRY-RUN] xz -T${XZ_THREADS} ${trace_out} && xz -t ${trace_out}.xz"
@@ -243,15 +243,43 @@ for i in "${!sids[@]}"; do
         echo "[$(date '+%H:%M:%S')] [PIN:$sid] Starting trace..."
         cd "$spec_work_dir" || { echo "[PIN:$sid] FAILED: cannot cd"; echo "1" >> "$failfile"; exit 1; }
 
+        # Launch PIN in background to enable trace file size monitoring
         if [ -n "${stdin_file:-}" ] && [ -f "$stdin_file" ]; then
-            eval "$pin_cmd" < "$stdin_file"
+            eval "$pin_cmd" < "$stdin_file" &
         elif [ -n "${stdin_file:-}" ]; then
-            eval "$pin_cmd" < "${spec_work_dir}/${stdin_file}"
+            eval "$pin_cmd" < "${spec_work_dir}/${stdin_file}" &
         else
-            eval "$pin_cmd"
+            eval "$pin_cmd" &
         fi
+        pin_pid=$!
 
-        if [ $? -eq 0 ] && [ -f "$trace_out" ]; then
+        # Monitor trace file size; terminate PIN when 100M instructions recorded
+        TRACE_TARGET=$(( TRACE_LENGTH * 64 ))   # 250M × 64 = 16GB
+        TRACE_MIN=$(( TRACE_TARGET * 98 / 100 ))
+        last_sz=0; stable=0
+        while kill -0 $pin_pid 2>/dev/null; do
+            sleep 10
+            sz=$(stat -c %s "$trace_out" 2>/dev/null || echo 0)
+            if [ "$sz" -ge "$TRACE_TARGET" ]; then
+                echo "[$(date '+%H:%M:%S')] [PIN:$sid] Target reached (${sz} bytes), stopping..."
+                kill $pin_pid 2>/dev/null
+                break
+            fi
+            if [ "$sz" -ge "$TRACE_MIN" ] && [ "$sz" = "$last_sz" ] && [ "$sz" -gt 0 ]; then
+                stable=$((stable + 1))
+                if [ "$stable" -ge 3 ]; then
+                    echo "[$(date '+%H:%M:%S')] [PIN:$sid] Stable at ${sz} bytes, stopping..."
+                    kill $pin_pid 2>/dev/null
+                    break
+                fi
+            else
+                stable=0
+            fi
+            last_sz=$sz
+        done
+        wait $pin_pid 2>/dev/null || true
+
+        if [ -f "$trace_out" ] && [ -s "$trace_out" ]; then
             echo "[$(date '+%H:%M:%S')] [PIN:$sid] Trace done, compressing..."
             # Serialize xz compression to avoid I/O thrashing when many traces finish together
             if flock "$XZ_LOCKFILE" xz -T"${XZ_THREADS}" "$trace_out"; then

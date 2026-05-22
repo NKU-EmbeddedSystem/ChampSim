@@ -25,7 +25,14 @@ export CHAMPSIM_BIN="${CHAMPSIM_ROOT}/bin/champsim_hint_profile"
 export CHAMPSIM_CONFIG="${CHAMPSIM_ROOT}/champsim_config_hint_profile.json"
 
 # --- SimPoint interval size (instructions per interval) ---
-export INTERVAL_SIZE=100000000   # 100M
+# DPC-3 uses 1B instruction windows for SimPoint analysis.
+# Skip = interval_id × INTERVAL_SIZE.
+export INTERVAL_SIZE=1000000000  # 1B
+
+# --- Trace recording length (instructions per trace) ---
+# DPC-3 standard: 50M warmup + 200M simulation = 250M total.
+# This is independent of INTERVAL_SIZE (recording starts at the skip point).
+export TRACE_LENGTH=250000000    # 250M
 
 # --- Weight threshold: only generate traces for SimPoints with weight above this ---
 export WEIGHT_THRESHOLD=0.01
