@@ -1,260 +1,248 @@
 #include "hawkeye.h"
 
-#include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <memory>
 
-// Constants definitions if needed
-#define bitmask(l) (((l) == 64) ? (unsigned long long)(-1LL) : ((1LL << (l)) - 1LL))
+#define bitmask(l) (((l) == 64) ? (unsigned long long)(-1LL) : ((1LL << (l))-1LL))
 #define bits(x, i, l) (((x) >> (i)) & bitmask(l))
 
-hawkeye::hawkeye(CACHE* cache) : replacement(cache), NUM_SET(cache->NUM_SET), NUM_WAY(cache->NUM_WAY)
+hawkeye::hawkeye(CACHE* cache)
+    : champsim::modules::replacement(cache),
+      NUM_SET_V(cache->NUM_SET),
+      NUM_WAY_V(cache->NUM_WAY),
+      NUM_CORE_V(static_cast<uint32_t>(NUM_CPUS))
 {
-  // Initialize vectors based on cache size
-  rrip.resize(NUM_SET * NUM_WAY, MAXRRIP);
-  sample_signature.resize(NUM_SET * NUM_WAY, 0);
-  prefetching.resize(NUM_SET * NUM_WAY, false);
-  set_timer.resize(NUM_SET, 0);
+  const bool single_core = (NUM_CORE_V == 1);
 
-  // Initialize OPTgen for each set
-  optgen_occup_vector.resize(NUM_SET);
-  for (int i = 0; i < NUM_SET; i++) {
-    // According to original code: init(LLC_WAYS - 2)
-    // Ensure strictly positive size if ways are small
-    long opt_ways = (NUM_WAY > 2) ? (NUM_WAY - 2) : 1;
-    optgen_occup_vector[i].init(opt_ways);
+  MAXRRIP = 7;
+  TIMER_SIZE = 1024;
+  MAX_SHCT = 31;
+  SHCT_SIZE_BITS = single_core ? 11 : 14;
+  SHCT_SIZE = (1 << SHCT_SIZE_BITS);
+  OPTGEN_VECTOR_SIZE = 128;
+  SAMPLED_SET_BITS = single_core ? 6 : 8;
+  SAMPLER_WAYS = 8;
+  SAMPLED_CACHE_SIZE = single_core ? 2800 : (2800 * static_cast<int>(NUM_CORE_V));
+  SAMPLER_SETS = SAMPLED_CACHE_SIZE / SAMPLER_WAYS;
+
+  rrpv.resize(NUM_SET_V, std::vector<uint32_t>(NUM_WAY_V, MAXRRIP));
+  signatures.resize(NUM_SET_V, std::vector<uint64_t>(NUM_WAY_V, 0));
+  prefetched.resize(NUM_SET_V, std::vector<bool>(NUM_WAY_V, false));
+  perset_mytimer.resize(NUM_SET_V, 0);
+  optgen.resize(NUM_SET_V);
+
+  for (auto& o : optgen) {
+    o.init(static_cast<uint64_t>(NUM_WAY_V - 2));
   }
 
-  cache_history_sampler.resize(SAMPLER_SETS);
-  for (int i = 0; i < SAMPLER_SETS; i++) {
-    cache_history_sampler[i].clear();
+  addr_history.resize(SAMPLER_SETS);
+  for (auto& a : addr_history) {
+    a.clear();
   }
+
+  demand_predictor = std::make_unique<HAWKEYE_PC_PREDICTOR>(MAX_SHCT, SHCT_SIZE);
+  prefetch_predictor = std::make_unique<HAWKEYE_PC_PREDICTOR>(MAX_SHCT, SHCT_SIZE);
+
+  fmt::print(stderr, "[REPL] initialize_replacement: hawkeye\n");
 }
 
-uint64_t hawkeye::CRC(uint64_t address) const
+bool hawkeye::is_sampled_set(long set)
 {
-  unsigned long long crcPolynomial = 3988292384ULL;
-  unsigned long long result = address;
-  for (unsigned int i = 0; i < 32; i++)
-    if ((result & 1) == 1) {
-      result = (result >> 1) ^ crcPolynomial;
-    } else {
-      result >>= 1;
-    }
-  return result;
+  int log2_sets = static_cast<int>(std::log2(NUM_SET_V));
+  return bits(set, 0, static_cast<unsigned long long>(SAMPLED_SET_BITS)) ==
+         bits(set, static_cast<unsigned long long>(log2_sets - SAMPLED_SET_BITS), static_cast<unsigned long long>(SAMPLED_SET_BITS));
 }
 
-bool hawkeye::is_sampled_set(long set) const
+void hawkeye::replace_addr_history_element(unsigned int sampler_set)
 {
-  // Logic from original: bits(set, 0, 6) == bits(set, (log2(SETS) - 6), 6)
-  // Dynamic calculation of log2(NUM_SET)
-  int log2_sets = 0;
-  long temp = NUM_SET;
-  while (temp >>= 1)
-    ++log2_sets;
-
-  if (log2_sets < 6)
-    return false; // Safety check
-
-  return bits(set, 0, 6) == bits(set, (log2_sets - 6), 6);
-}
-
-void hawkeye::update_cache_history(unsigned int sample_set, unsigned int currentVal)
-{
-  for (auto& it : cache_history_sampler[sample_set]) {
-    if (it.second.lru < currentVal) {
-      it.second.lru++;
+  uint64_t lru_addr = 0;
+  for (auto it = addr_history[sampler_set].begin(); it != addr_history[sampler_set].end(); ++it) {
+    if (it->second.lru == (SAMPLER_WAYS - 1)) {
+      lru_addr = it->first;
+      break;
     }
   }
+  addr_history[sampler_set].erase(lru_addr);
 }
 
-long hawkeye::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, const champsim::cache_block* current_set, champsim::address ip,
-                          champsim::address full_addr, access_type type)
+void hawkeye::update_addr_history_lru(unsigned int sampler_set, unsigned int curr_lru)
 {
-  // Find the line with RRPV of 7 in that set
-  for (long i = 0; i < NUM_WAY; i++) {
-    if (get_rrip(set, i) == MAXRRIP) {
+  for (auto it = addr_history[sampler_set].begin(); it != addr_history[sampler_set].end(); ++it) {
+    if (it->second.lru < curr_lru) {
+      it->second.lru++;
+    }
+  }
+}
+
+long hawkeye::find_victim(uint32_t cpu, uint64_t instr_id, long set,
+                           const champsim::cache_block* current_set,
+                           champsim::address ip, champsim::address full_addr,
+                           access_type type)
+{
+  for (long i = 0; i < static_cast<long>(NUM_WAY_V); i++) {
+    if (rrpv[set][i] == MAXRRIP) {
       return i;
     }
   }
 
-  // If no RRPV of 7, then we find next highest RRPV value (oldest cache-friendly line)
-  uint32_t max_rrpv = 0;
-  long victim = -1;
-  for (long i = 0; i < NUM_WAY; i++) {
-    if (get_rrip(set, i) >= max_rrpv) {
-      max_rrpv = get_rrip(set, i);
-      victim = i;
+  uint32_t max_rrip = 0;
+  int32_t lru_victim = -1;
+  for (long i = 0; i < static_cast<long>(NUM_WAY_V); i++) {
+    if (rrpv[set][i] >= max_rrip) {
+      max_rrip = rrpv[set][i];
+      lru_victim = static_cast<int32_t>(i);
     }
   }
 
-  // Asserting that victim is not -1
-  // Predictor will be trained negatively on evictions
-  if (victim != -1 && is_sampled_set(set)) {
-    // Accessing flattened arrays
-    uint64_t signature = sample_signature[set * NUM_WAY + victim];
-    bool is_prefetch = prefetching[set * NUM_WAY + victim];
-
-    if (is_prefetch) {
-      predictor_prefetch.decrease(signature);
+  if (is_sampled_set(set)) {
+    if (prefetched[set][lru_victim]) {
+      prefetch_predictor->decrement(signatures[set][lru_victim]);
     } else {
-      predictor_demand.decrease(signature);
+      demand_predictor->decrement(signatures[set][lru_victim]);
     }
   }
 
-  return victim;
+  return static_cast<long>(lru_victim);
 }
 
-void hawkeye::update_replacement_state(uint32_t triggering_cpu, long set, long way, champsim::address full_addr, champsim::address ip,
-                                       champsim::address victim_addr, access_type type, uint8_t hit)
+void hawkeye::replacement_cache_fill(uint32_t cpu, long set, long way,
+                                     champsim::address full_addr,
+                                     champsim::address ip,
+                                     champsim::address victim_addr,
+                                     access_type type)
 {
-  uint64_t paddr_val = full_addr.to<uint64_t>();
+  update_replacement_state(cpu, set, way, full_addr, ip, victim_addr, type, 0);
+}
+
+void hawkeye::update_replacement_state(uint32_t cpu, long set, long way,
+                                        champsim::address full_addr,
+                                        champsim::address ip,
+                                        champsim::address victim_addr,
+                                        access_type type, uint8_t hit)
+{
   uint64_t pc_val = ip.to<uint64_t>();
+  uint64_t paddr = full_addr.to<uint64_t>();
 
-  // Mask address (paddr = (paddr >> 6) << 6)
-  uint64_t paddr_aligned = (paddr_val >> 6) << 6;
+  paddr = (paddr >> 6) << 6;
 
-  // Ignore all types that are writebacks (WRITE in ChampSim often includes WBs)
-  // Original code: if (type == WRITEBACK) return;
+  if (type == access_type::PREFETCH) {
+    if (!hit)
+      prefetched[set][way] = true;
+  } else {
+    prefetched[set][way] = false;
+  }
+
   if (type == access_type::WRITE) {
     return;
   }
 
-  // Flattened index
-  long flat_idx = set * NUM_WAY + way;
-
-  if (type == access_type::PREFETCH) {
-    if (!hit) {
-      prefetching[flat_idx] = true;
-    }
-  } else {
-    prefetching[flat_idx] = false;
-  }
-
-  // Only if we are using sampling sets for OPTgen
   if (is_sampled_set(set)) {
-    uint64_t currentVal = set_timer[set] % OPTGEN_SIZE;
-    uint64_t sample_tag = CRC(paddr_aligned >> 12) % 256;
-    uint32_t sample_set = (paddr_aligned >> 6) % SAMPLER_SETS;
+    uint64_t curr_quanta = perset_mytimer[set] % OPTGEN_VECTOR_SIZE;
+    uint32_t sampler_set = static_cast<uint32_t>((paddr >> 6) % SAMPLER_SETS);
+    uint64_t sampler_tag = CRC(paddr >> 12) % 256;
 
-    auto& sampler_map = cache_history_sampler[sample_set];
-
-    // If line has been used before, ignoring prefetching (demand access operation)
-    if ((type != access_type::PREFETCH) && (sampler_map.find(sample_tag) != sampler_map.end())) {
-      unsigned int current_time = set_timer[set];
-      if (current_time < sampler_map[sample_tag].previousVal) {
-        current_time += TIMER_SIZE;
+    if ((addr_history[sampler_set].find(sampler_tag) != addr_history[sampler_set].end()) &&
+        (type != access_type::PREFETCH))
+    {
+      unsigned int curr_timer = static_cast<unsigned int>(perset_mytimer[set]);
+      if (curr_timer < addr_history[sampler_set][sampler_tag].last_quanta) {
+        curr_timer = curr_timer + TIMER_SIZE;
       }
-      uint64_t previousVal = sampler_map[sample_tag].previousVal % OPTGEN_SIZE;
-      bool isWrap = (current_time - sampler_map[sample_tag].previousVal) > OPTGEN_SIZE;
+      bool wrap = ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > OPTGEN_VECTOR_SIZE);
+      uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
 
-      // Train predictor positively for last PC value that was prefetched
-      if (!isWrap && optgen_occup_vector[set].is_cache(currentVal, previousVal)) {
-        if (sampler_map[sample_tag].prefetching) {
-          predictor_prefetch.increase(sampler_map[sample_tag].PCval);
+      if (!wrap && optgen[set].should_cache(curr_quanta, last_quanta)) {
+        if (addr_history[sampler_set][sampler_tag].prefetched) {
+          prefetch_predictor->increment(addr_history[sampler_set][sampler_tag].PC);
         } else {
-          predictor_demand.increase(sampler_map[sample_tag].PCval);
+          demand_predictor->increment(addr_history[sampler_set][sampler_tag].PC);
         }
-      }
-      // Train predictor negatively since OPT did not cache this line
-      else {
-        if (sampler_map[sample_tag].prefetching) {
-          predictor_prefetch.decrease(sampler_map[sample_tag].PCval);
-        } else {
-          predictor_demand.decrease(sampler_map[sample_tag].PCval);
-        }
-      }
-
-      optgen_occup_vector[set].set_access(currentVal);
-      // Update cache history
-      update_cache_history(sample_set, sampler_map[sample_tag].lru);
-
-      // Mark prefetching as false since demand access
-      sampler_map[sample_tag].prefetching = false;
-    }
-    // If line has not been used before, mark as prefetch or demand
-    else if (sampler_map.find(sample_tag) == sampler_map.end()) {
-      // If sampling, find victim from cache
-      if (sampler_map.size() == SAMPLER_HIST) {
-        // Replace the element in the cache history (Find LRU == SAMPLER_HIST - 1)
-        uint64_t addr_val = 0;
-        bool found = false;
-        for (auto it = sampler_map.begin(); it != sampler_map.end(); ++it) {
-          if ((it->second).lru == (SAMPLER_HIST - 1)) {
-            addr_val = it->first;
-            found = true;
-            break;
-          }
-        }
-        if (found)
-          sampler_map.erase(addr_val);
-      }
-
-      // Create new entry
-      sampler_map[sample_tag].init();
-      // If prefetch, mark it as a prefetching or if not, just set the demand access
-      if (type == access_type::PREFETCH) {
-        sampler_map[sample_tag].set_prefetch();
-        optgen_occup_vector[set].set_prefetch(currentVal);
       } else {
-        optgen_occup_vector[set].set_access(currentVal);
+        // Train negatively
+        if (addr_history[sampler_set][sampler_tag].prefetched) {
+          prefetch_predictor->decrement(addr_history[sampler_set][sampler_tag].PC);
+        } else {
+          demand_predictor->decrement(addr_history[sampler_set][sampler_tag].PC);
+        }
       }
 
-      // Update cache history
-      update_cache_history(sample_set, SAMPLER_HIST - 1);
+      optgen[set].add_access(curr_quanta);
+      update_addr_history_lru(sampler_set, addr_history[sampler_set][sampler_tag].lru);
+      addr_history[sampler_set][sampler_tag].prefetched = false;
     }
-    // If line is neither of the two above options, then it is a prefetch line
-    else {
-      uint64_t previousVal = sampler_map[sample_tag].previousVal % OPTGEN_SIZE;
-      if (set_timer[set] - sampler_map[sample_tag].previousVal < 5 * NUM_WAY) { // Note: Original used NUM_CORE, using NUM_WAY as proxy or keep define
-        if (optgen_occup_vector[set].is_cache(currentVal, previousVal)) {
-          if (sampler_map[sample_tag].prefetching) {
-            predictor_prefetch.increase(sampler_map[sample_tag].PCval);
+    else if (addr_history[sampler_set].find(sampler_tag) == addr_history[sampler_set].end())
+    {
+      if (addr_history[sampler_set].size() == static_cast<size_t>(SAMPLER_WAYS)) {
+        replace_addr_history_element(sampler_set);
+      }
+
+      addr_history[sampler_set][sampler_tag].init(static_cast<unsigned int>(curr_quanta));
+
+      if (type == access_type::PREFETCH) {
+        addr_history[sampler_set][sampler_tag].mark_prefetch();
+        optgen[set].add_prefetch(curr_quanta);
+      } else {
+        optgen[set].add_access(curr_quanta);
+      }
+
+      update_addr_history_lru(sampler_set, SAMPLER_WAYS - 1);
+    }
+    else
+    {
+      uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
+      if (perset_mytimer[set] - addr_history[sampler_set][sampler_tag].last_quanta < 5 * NUM_CORE_V) {
+        if (optgen[set].should_cache(curr_quanta, last_quanta)) {
+          if (addr_history[sampler_set][sampler_tag].prefetched) {
+            prefetch_predictor->increment(addr_history[sampler_set][sampler_tag].PC);
           } else {
-            predictor_demand.increase(sampler_map[sample_tag].PCval);
+            demand_predictor->increment(addr_history[sampler_set][sampler_tag].PC);
           }
         }
       }
-      sampler_map[sample_tag].set_prefetch();
-      optgen_occup_vector[set].set_prefetch(currentVal);
-      // Update cache history
-      update_cache_history(sample_set, sampler_map[sample_tag].lru);
+
+      addr_history[sampler_set][sampler_tag].mark_prefetch();
+      optgen[set].add_prefetch(curr_quanta);
+      update_addr_history_lru(sampler_set, addr_history[sampler_set][sampler_tag].lru);
     }
-    // Update the sample with time and PC
-    sampler_map[sample_tag].update(set_timer[set], pc_val);
-    sampler_map[sample_tag].lru = 0;
-    set_timer[set] = (set_timer[set] + 1) % TIMER_SIZE;
+
+    bool new_prediction = demand_predictor->get_prediction(pc_val);
+    if (type == access_type::PREFETCH) {
+      new_prediction = prefetch_predictor->get_prediction(pc_val);
+    }
+
+    addr_history[sampler_set][sampler_tag].update(static_cast<unsigned int>(perset_mytimer[set]),
+                                                   pc_val, new_prediction);
+    addr_history[sampler_set][sampler_tag].lru = 0;
+    perset_mytimer[set] = (perset_mytimer[set] + 1) % static_cast<uint64_t>(TIMER_SIZE);
   }
 
-  // Retrieve Hawkeye's prediction for line
-  bool prediction = predictor_demand.get_prediction(pc_val);
+  bool new_prediction = demand_predictor->get_prediction(pc_val);
   if (type == access_type::PREFETCH) {
-    prediction = predictor_prefetch.get_prediction(pc_val);
+    new_prediction = prefetch_predictor->get_prediction(pc_val);
   }
 
-  sample_signature[flat_idx] = pc_val;
+  signatures[set][way] = pc_val;
 
-  // Fix RRIP counters with correct RRPVs and age accordingly
-  if (!prediction) {
-    get_rrip(set, way) = MAXRRIP;
+  if (!new_prediction) {
+    rrpv[set][way] = MAXRRIP;
   } else {
-    get_rrip(set, way) = 0;
+    rrpv[set][way] = 0;
     if (!hit) {
-      // Verifying RRPV of lines has not saturated
-      bool isMaxVal = false;
-      for (long i = 0; i < NUM_WAY; i++) {
-        if (get_rrip(set, i) == MAXRRIP - 1) {
-          isMaxVal = true;
+      bool saturated = false;
+      for (long i = 0; i < static_cast<long>(NUM_WAY_V); i++) {
+        if (rrpv[set][i] == MAXRRIP - 1) {
+          saturated = true;
           break;
         }
       }
 
-      // Aging cache-friendly lines that have not saturated
-      for (long i = 0; i < NUM_WAY; i++) {
-        if (!isMaxVal && get_rrip(set, i) < MAXRRIP - 1) {
-          get_rrip(set, i)++;
+      for (long i = 0; i < static_cast<long>(NUM_WAY_V); i++) {
+        if (!saturated && rrpv[set][i] < MAXRRIP - 1) {
+          rrpv[set][i]++;
         }
       }
     }
-    get_rrip(set, way) = 0;
+    rrpv[set][way] = 0;
   }
 }
