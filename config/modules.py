@@ -25,6 +25,17 @@ class ModuleSearchContext:
         self.paths = [p for p in paths if os.path.exists(p) and os.path.isdir(p)]
         self.verbose = verbose
 
+    @staticmethod
+    def _is_module_dir(path):
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            return False
+
+        has_legacy_marker = '__legacy__' in entries
+        has_translation_unit = any(name.endswith('.cc') for name in entries)
+        return has_legacy_marker or has_translation_unit
+
     def data_from_path(self, path):
         name = get_module_name(path)
         is_legacy = ('__legacy__' in [*itertools.chain(*(f for _,_,f in os.walk(path)))])
@@ -57,4 +68,4 @@ class ModuleSearchContext:
     def find_all(self):
         base_dirs = [next(os.walk(p)) for p in self.paths]
         files = itertools.starmap(os.path.join, itertools.chain(*(zip(itertools.repeat(b), d) for b,d,_ in base_dirs)))
-        return [self.data_from_path(f) for f in files]
+        return [self.data_from_path(f) for f in files if self._is_module_dir(f)]

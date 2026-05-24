@@ -89,7 +89,31 @@ def module_parse(mod, context):
     '''
 
     if isinstance(mod, dict):
-        return util.chain(util.subdict(mod, ('class','legacy')), context.find(mod['path']))
+        preserved = util.subdict(mod, ('class','legacy'))
+        # Build full template class name for set_dueling-style modules.
+        # The sub_policies list may already be corrupted (duplicated) by
+        # upstream dict merging.  Use dict.fromkeys() to deduplicate while
+        # preserving order, then take a snapshot copy.
+        if 'sub_policies' in mod and mod['sub_policies']:
+            unique_sub = list(dict.fromkeys(mod['sub_policies']))
+            # Resolve module names to C++ class names.
+            # Most modules have matching names, but some don't (mockingjay -> mockingJay).
+            _CLASS_OVERRIDES = {'mockingjay': 'mockingJay'}
+            class_names = []
+            for sp in unique_sub:
+                sp_data = context.find(sp)
+                cname = sp_data.get('class', sp)
+                cname = _CLASS_OVERRIDES.get(cname, cname)
+                class_names.append(cname)
+            preserved['sub_policies'] = class_names
+            preserved['_sub_module_names'] = unique_sub
+        result = util.chain(preserved, context.find(mod['path']))
+        if 'sub_policies' in preserved:
+            result['class'] = f'{os.path.basename(mod["path"])}<{", ".join(preserved["sub_policies"])}>'
+            result['sub_policies'] = preserved['sub_policies']
+            if '_sub_module_names' in preserved:
+                result['_sub_module_names'] = preserved['_sub_module_names']
+        return result
     return context.find(mod)
 
 def split_string_or_list(val, delim=','):

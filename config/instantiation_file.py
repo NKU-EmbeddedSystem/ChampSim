@@ -285,15 +285,42 @@ def module_include_files(datas):
     '''
 
     def all_headers_on(path):
-        for base,_,files in os.walk(path):
+        for base, dirs, files in os.walk(path):
+            if base == path:
+                dirs[:] = [
+                    d for d in dirs
+                    if not d.startswith('.')
+                    and (
+                        '__legacy__' in os.listdir(os.path.join(base, d))
+                        or any(name.endswith('.cc') for name in os.listdir(os.path.join(base, d)))
+                    )
+                ]
             for file in files:
                 if os.path.splitext(file)[1] == '.h':
                     yield os.path.abspath(os.path.join(base, file))
 
-    class_paths = (zip(itertools.repeat(module_data['class']), all_headers_on(module_data['path'])) for module_data in datas)
-    candidates = set(itertools.chain.from_iterable(class_paths))
+    # Collect paths: sub-policy paths first, then module paths.
+    # This ensures sub-policy headers appear before the wrapping module's header
+    # (required for set_dueling<A,B> where A,B must be complete types).
+    paths = []
+    for module_data in datas:
+        # Use _sub_module_names (module dir names) for path resolution;
+        # sub_policies contains C++ class names which may differ (e.g. mockingjay vs mockingJay)
+        sub_names = module_data.get('_sub_module_names', module_data.get('sub_policies', []))
+        if sub_names:
+            for sp_name in sub_names:
+                # Sub-policy directories are siblings of the wrapping module
+                sp_path = os.path.join(os.path.dirname(module_data['path']), sp_name)
+                if os.path.exists(sp_path):
+                    paths.append(sp_path)
+        paths.append(module_data['path'])
 
-    yield from (f'#include "{f}"' for _,f in candidates)
+    candidates = dict.fromkeys(
+        f for path in paths
+        for f in all_headers_on(path)
+    )
+
+    yield from (f'#include "{f}"' for f in candidates)
 
 def decorate_queues(caches, ptws, pmem):
     return util.chain(
