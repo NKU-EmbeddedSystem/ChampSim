@@ -42,3 +42,8 @@ tools/profiling/results/
 
 # Compiled test binaries
 tools/profiling/tests/func/mini_binary/func_test_mini
+
+# Experiment artifacts (reproducible)
+artifacts/runs/
+artifacts/plans/stage1/SUMMARY.log
+artifacts/plans/stage1/run_stage1.sh

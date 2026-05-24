@@ -1,5 +1,6 @@
 --std=c++17
 -O3
+-DHINT_PROFILING
 -Wall
 -Wextra
 -Wshadow
