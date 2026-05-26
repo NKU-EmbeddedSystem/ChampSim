@@ -43,3 +43,6 @@ tools/profiling/results/
 # Compiled test binaries
 tools/profiling/tests/func/mini_binary/func_test_mini
 reports/
+
+# Experiment run artifacts (generated output)
+artifacts/runs/
