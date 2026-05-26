@@ -1,0 +1,37 @@
+# 模板 — 黑盒实验阶段的结论报告 (CONCLUSIONS.md)
+#
+# 放在 artifacts/plans/<stage>/CONCLUSIONS.md
+# 由脚本在执行完成后自动生成。
+# 包含：参数摘要 → 结果表 → 过滤判定 → 检查项 → 下一步建议。
+
+# Stage <N> Conclusions — <输入标识>
+
+**Date:** <YYYY-MM-DD HH:MM:SS> | **Input:** <输入描述> | **Run:** <YYYYMMDD-HHMMSS> | **Status:** Complete|Failed
+
+## Results
+
+| <维度> | <指标1> | <指标2> | <指标3> | <指标4> |
+|--------|---------|---------|---------|---------|
+| <候选0名> | <值> | <值> | <值> | <值> |
+| <候选1名> | <值> | <值> | <值> | <值> |
+| <候选N名> | <值> | <值> | <值> | <值> |
+
+## Filter
+
+- <判定指标>: <计算值>
+- Decision: RETAINED | FILTERED
+
+## Best Single <维度>
+
+- **<最佳候选名>** — <关键指标> <值>
+
+## Checks
+
+- [PASS|FAIL] <检查项1> (<判定条件>)
+- [PASS|FAIL] <检查项2> (<判定条件>)
+- See SUMMARY.log for full details
+
+## Next Stage
+
+- Stage <N+1>: <下一阶段标题>
+- Hypothesis: <预期下一阶段的关键指标应优于本阶段最佳值>

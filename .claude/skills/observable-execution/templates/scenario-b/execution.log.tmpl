@@ -1,0 +1,17 @@
+# 模板 — 黑盒实验场景的控制平面日志 (execution.log)
+#
+# 放在 runs/<stage>/<YYYYMMDD-HHMMSS>/execution.log
+# 与场景 A 共享相同的生命周期事件格式，但 TASK DONE 可携带领域指标。
+# 所有指标字段均为可选 — 不同 stage 携带不同指标。
+
+[<ISO-8601>] STAGE BEGIN  stage=<阶段名>  tasks=<N>  run=<YYYYMMDD-HHMMSS>  input=<输入描述>
+
+[<ISO-8601>] TASK DISPATCH  name=<任务1名>  log=<任务1名>.sub.log  raw=<任务1名>.raw  data=<任务1名>.data.jsonl
+[<ISO-8601>] TASK DISPATCH  name=<任务2名>  log=<任务2名>.sub.log  raw=<任务2名>.raw  data=<任务2名>.data.jsonl
+[<ISO-8601>] TASK DISPATCH  name=<任务N名>  log=<任务N名>.sub.log  raw=<任务N名>.raw  data=<任务N名>.data.jsonl
+
+[<ISO-8601>] TASK DONE  name=<任务1名>  exit=0  elapsed_ms=<毫秒>  <指标1>=<值>  <指标2>=<值>
+[<ISO-8601>] TASK DONE  name=<任务2名>  exit=0  elapsed_ms=<毫秒>  <指标1>=<值>  <指标2>=<值>
+[<ISO-8601>] TASK DONE  name=<任务N名>  exit=1  elapsed_ms=<毫秒>  <指标1>=N/A
+
+[<ISO-8601>] STAGE DONE  stage=<阶段名>  pass=<N>  fail=<N>  best=<任务名>  <全局判定指标>=<值>
