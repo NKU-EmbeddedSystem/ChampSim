@@ -1,0 +1,17 @@
+# 模板 — 执行 `execution.log` 全局日志格式
+#
+# 以下是一个示例：有 3 个并行策略的 stage，其中 2 个成功、1 个失败。
+# Agent 执行时参照此格式，将占位符（<...>）替换为实际值。
+
+[2026-05-23T14:30:00] STAGE BEGIN  stage=<阶段名>  policies=3  run=20260523-143000-<任务简述>
+
+[2026-05-23T14:30:01] POLICY DISPATCH  name=<策略1名称>  log=policies/01-<策略1名称>.log
+[2026-05-23T14:30:01] POLICY DISPATCH  name=<策略2名称>  log=policies/02-<策略2名称>.log
+[2026-05-23T14:30:01] POLICY DISPATCH  name=<策略3名称>  log=policies/03-<策略3名称>.log
+
+[2026-05-23T14:33:20] POLICY DONE  name=<策略1名称>  result=success  artifacts=2  log=policies/01-<策略1名称>.log
+[2026-05-23T14:34:10] POLICY DONE  name=<策略2名称>  result=failed   artifacts=0  log=policies/02-<策略2名称>.log
+[2026-05-23T14:35:00] POLICY DONE  name=<策略3名称>  result=success  artifacts=1  log=policies/03-<策略3名称>.log
+
+[2026-05-23T14:35:01] STAGE DONE  stage=<阶段名>  pass=2  fail=1
+[2026-05-23T14:35:01] ACTION REQUIRED  policy=<策略2名称>  reason="<失败原因简述>"  log=policies/02-<策略2名称>.log

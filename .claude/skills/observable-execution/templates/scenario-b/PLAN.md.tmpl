@@ -1,0 +1,66 @@
+# 模板 — 黑盒实验阶段的计划文档 (PLAN.md)
+#
+# 放在 artifacts/plans/<stage>/PLAN.md
+# 在执行前编写，定义阶段目标、固定参数、执行步骤和预期产物。
+# 执行后脚本会自动在同目录下生成 CONCLUSIONS.md 和 symlink。
+
+# Stage <N>: <阶段标题>
+
+**Spec:** <关联的 spec 文档路径，可选>
+
+## Goal
+
+<一段话描述本阶段的目标：要测量什么、比较什么、验证什么。>
+
+## Fixed Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| <参数1>   | <值>  |
+| <参数2>   | <值>  |
+| <参数3>   | <值>  |
+| <变量维度> | **varies** (<N> candidates) |
+
+## Candidates
+
+| Index | Name |
+|-------|------|
+| 0     | <候选0名> |
+| 1     | <候选1名> |
+| 2     | <候选N名> |
+
+## Filter Rule
+
+<描述过滤条件：什么样的输入/结果应被丢弃。>
+例：<最佳指标> / <最差指标> < <阈值> → filter input
+
+## Auxiliary Checks
+
+1. **<检查项名称>:** <判定条件描述>
+2. **<检查项名称>:** <判定条件描述>
+
+## How to Run
+
+```bash
+bash scripts/run_<stage>.sh <参数列表>
+```
+
+## Output Structure
+
+```
+artifacts/
+  plans/<stage>/
+    PLAN.md              <- this file (write before execution)
+    run_<stage>.sh       <- symlink to scripts/run_<stage>.sh (auto)
+    SUMMARY.log          <- symlink to latest main.log (auto)
+    CONCLUSIONS.md       <- auto-generated after run
+
+  runs/<stage>/
+    latest -> <timestamp>                <- symlink to latest run (auto)
+    <YYYYMMDD-HHMMSS>/                   <- one directory per run (auto)
+      execution.log                      <- control plane
+      main.log                           <- global log
+      {task}.sub.log                     <- per-task sub-log
+      {task}.raw                         <- full stdout+stderr
+      {task}.data.jsonl                  <- structured data for downstream
+```

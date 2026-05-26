@@ -1,0 +1,4 @@
+repo: agent-bootstrap
+version: 9bed590
+updated: 2026-05-25T10:15:40Z
+modules: observable-execution
