@@ -12,7 +12,7 @@
 | Policies | 11 (7 standalone + 4 set-dueling) |
 | Parallel | 72 slots |
 
-## Geometric Mean Results
+## Results
 
 | Policy | GeoMean IPC | Speedup vs LRU | Traces |
 |--------|-------------|----------------|--------|
@@ -28,22 +28,33 @@
 | set_dueling_4p_lssh | 0.4944 | 1.0000 | 36 |
 | set_dueling_4p_lssm | 0.4944 | 1.0000 | 36 |
 
-## Best Policy
+## Filter
 
-**drrip** — geometric mean speedup vs LRU: **1.0732** (+7.32%)
+Threshold: speedup vs LRU > 1.02
 
-## Per-Trace IPC Table
+- lru: baseline (RETAINED)
+- srrip: speedup=1.0683 → RETAINED
+- drrip: speedup=1.0732 → RETAINED
+- ship: speedup=1.0680 → RETAINED
+- hawkeye: speedup=1.0154 → FILTERED
+- mockingjay: speedup=1.0226 → RETAINED
+- random: speedup=1.0560 → RETAINED
+- set_dueling_lru_srrip: speedup=1.0244 → RETAINED
+- set_dueling_mj_hk: speedup=1.0150 → FILTERED
+- set_dueling_4p_lssh: speedup=1.0000 → FILTERED
+- set_dueling_4p_lssm: speedup=1.0000 → FILTERED
 
-See `reports/stage1-20260525/summary.csv` for full per-trace data.
+## Best Single Policy
 
-## Key Observations
+- **drrip** — geometric mean speedup vs LRU: **1.0732** (+7.32%)
 
-1. **DRRIP** is the best standalone policy (+7.32% over LRU)
-2. **SRRIP** and **SHIP** are close behind (~+6.8%)
-3. **Random** surprisingly outperforms Hawkeye and Mockingjay (+5.60%)
-4. **set_dueling\<lru,srrip\>** provides modest improvement (+2.44%)
-5. **4-policy set_dueling** variants match baseline LRU (1.0000) — SDM overhead may negate benefits
-6. **Hawkeye** and **Mockingjay** show minimal gains over LRU (+1.5-2.3%)
+## Checks
+
+- [PASS] All tasks succeeded (396/396)
+- [PASS] LRU baseline produces valid IPC for all traces
+- [PASS] All policies produced positive IPC
+
+## Next Stage
 
 - Stage 2: TBD based on results
 
