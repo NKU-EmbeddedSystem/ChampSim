@@ -9,3 +9,44 @@ inc/champsim.h.bak
 
 bin/
 obj/
+
+**/*.o
+**/*.d
+
+test/000-test-main
+
+tracer/pin/obj-intel64/
+
+vcpkg_installed
+
+**/_build
+**/_doxygen
+
+absolute.options
+**/legacy.options
+**/function_patch.options
+**/legacy_bridge.inc
+**/legacy_bridge.h
+**/legacy_bridge.cc
+
+.cache/
+compile_commands.json
+
+.vscode/
+**/.DS_Store
+trace
+.omc/
+*.log
+tools/profiling/data/
+
+# Pythia adapter files (ported prefetchers, keep on disk but not tracked)
+
+# Profiling results (runtime output)
+tools/profiling/results/
+
+# Compiled test binaries
+tools/profiling/tests/func/mini_binary/func_test_mini
+reports/
+
+# Experiment run artifacts (generated output)
+artifacts/runs/
