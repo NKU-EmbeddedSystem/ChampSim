@@ -11,12 +11,12 @@ long repl_hint_dispatch::find_victim(uint32_t triggering_cpu, uint64_t instr_id,
   const hint_entry* hint = hint_table::instance().lookup(ip.to<uint64_t>());
   int idx = hint ? hint->replacement_policy_index : hint_table::instance().get_default_replacement();
 
-  switch (idx) {
-    case 0: return lru_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
-    case 1: return ship_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
-    case 2: return drrip_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
-    case 3: return srrip_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
-    case 4: return random_policy.find_victim(triggering_cpu, instr_id, set, current_set,
+  switch (static_cast<ReplacementPolicy>(idx)) {
+    case ReplacementPolicy::LRU: return lru_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+    case ReplacementPolicy::SHIP: return ship_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+    case ReplacementPolicy::DRRIP: return drrip_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+    case ReplacementPolicy::SRRIP: return srrip_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
+    case ReplacementPolicy::RANDOM: return random_policy.find_victim(triggering_cpu, instr_id, set, current_set,
                                              ip.to<uint64_t>(), full_addr.to<uint64_t>(), type);
     default: return lru_policy.find_victim(triggering_cpu, instr_id, set, current_set, ip, full_addr, type);
   }

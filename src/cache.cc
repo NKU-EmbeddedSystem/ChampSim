@@ -269,7 +269,11 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 #ifdef HINT_PROFILING
   {
     uint64_t latency = hit ? HIT_LATENCY.count() : FILL_LATENCY.count();
-    PROFILER_RECORD_ACCESS(handle_pkt.ip.to<uint64_t>(), 0, 0, hit, latency);
+    // Only record demand accesses (LOAD/RFO) for AMAT calculation
+    // Prefetch requests should not affect AMAT comparison across prefetchers
+    bool is_demand = (handle_pkt.type == access_type::LOAD || handle_pkt.type == access_type::RFO);
+    PROFILER_RECORD_CONTEXT_KEYS(handle_pkt.ip.to<uint64_t>(), handle_pkt.address);
+    PROFILER_RECORD_ACCESS(handle_pkt.ip.to<uint64_t>(), 0, -1, hit, latency, is_demand);
   }
 #endif
 

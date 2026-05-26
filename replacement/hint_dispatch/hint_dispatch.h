@@ -12,6 +12,15 @@
 #include "../ship/ship.h"
 #include "../srrip/srrip.h"
 
+// Replacement policy indices — must match policy_registry.py
+enum class ReplacementPolicy : int {
+    LRU = 0,
+    SHIP = 1,
+    DRRIP = 2,
+    SRRIP = 3,
+    RANDOM = 4,
+};
+
 // hint_dispatch is a standalone replacement module that wraps an ensemble of
 // 5 sub-policies and dispatches to the selected one based on a PC-keyed hint
 // table lookup. All sub-policies receive update_replacement_state() calls so

@@ -29,6 +29,15 @@ enum class ContextFeature {
     COMPOSITE = 4,
 };
 
+// Prefetch policy indices — must match policy_registry.py
+enum class PrefetchPolicy : int {
+    NO = 0,
+    NEXT_LINE = 1,
+    IP_STRIDE = 2,
+    SPP_DEV = 3,
+    VA_AMPM_LITE = 4,
+};
+
 // hint_dispatch is a standalone prefetcher module that wraps an ensemble of
 // 5 sub-prefetchers and dispatches to the selected one based on a PC-keyed
 // hint table lookup. Metadata from the selected sub-prefetcher is returned
@@ -60,6 +69,8 @@ class pref_hint_dispatch : public champsim::modules::prefetcher
 
 public:
   explicit pref_hint_dispatch(CACHE* cache);
+
+  void prefetcher_initialize();
 
   uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit,
                                     bool useful_prefetch, access_type type, uint32_t metadata_in);
