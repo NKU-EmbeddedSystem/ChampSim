@@ -12,7 +12,6 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 BIN_DIR="$ROOT_DIR/bin"
 TRACE_DIR="$ROOT_DIR/trace"
-CONFIG_DIR="$ROOT_DIR/artifacts/configs"
 RUNS_DIR="$ROOT_DIR/artifacts/runs/stage1"
 PLANS_DIR="$ROOT_DIR/artifacts/plans/stage1"
 REPORTS_BASE="$ROOT_DIR/reports"
@@ -22,7 +21,7 @@ WARMUP=50000000
 SIMULATION=200000000
 PARALLEL=72
 
-# 11 policies: name -> config file
+# 10 LLC replacement policies (6 standalone + 4 set-dueling)
 declare -a POLICY_NAMES=(
     lru
     srrip
@@ -30,25 +29,10 @@ declare -a POLICY_NAMES=(
     ship
     hawkeye
     mockingjay
-    random
     set_dueling_lru_srrip
     set_dueling_mj_hk
     set_dueling_4p_lssh
     set_dueling_4p_lssm
-)
-
-declare -A POLICY_CONFIGS=(
-    [lru]="stage1_lru.json"
-    [srrip]="stage1_srrip.json"
-    [drrip]="stage1_drrip.json"
-    [ship]="stage1_ship.json"
-    [hawkeye]="stage1_hawkeye.json"
-    [mockingjay]="stage1_mockingjay.json"
-    [random]="stage1_random.json"
-    [set_dueling_lru_srrip]="stage1_set_dueling_lru_srrip.json"
-    [set_dueling_mj_hk]="stage1_set_dueling_mj_hk.json"
-    [set_dueling_4p_lssh]="stage1_set_dueling_4p_lssh.json"
-    [set_dueling_4p_lssm]="stage1_set_dueling_4p_lssm.json"
 )
 
 # ── Run directory ──
@@ -74,13 +58,13 @@ log_main() {
     echo "$*" | tee -a "$RUN_DIR/main.log"
 }
 
-# ── Build binaries ──
+# ── Build binaries (previous branch: build_champsim.sh) ──
 build_binaries() {
     log_main "── Building binaries ──────────────────────────────────────"
 
     for policy in "${POLICY_NAMES[@]}"; do
-        local config="$CONFIG_DIR/${POLICY_CONFIGS[$policy]}"
         local binary="$BIN_DIR/champsim_${policy}"
+        local orig_name="$BIN_DIR/bimodal-no-no-no-no-${policy}-1core"
 
         if [[ -x "$binary" ]]; then
             log_main "  SKIP $policy (binary exists)"
@@ -90,15 +74,16 @@ build_binaries() {
         log_main "  BUILD $policy ..."
         (
             cd "$ROOT_DIR"
-            ./config.sh "$config" 2>&1 | tail -3
-            make -j$(nproc) 2>&1 | tail -5
+            ./build_champsim.sh bimodal no no no no "$policy" 1 2>&1
         ) > "$RUN_DIR/build_${policy}.log" 2>&1
 
-        if [[ -x "$binary" ]]; then
+        # Copy to simplified name if build succeeded
+        if [[ -x "$orig_name" ]]; then
+            cp "$orig_name" "$binary"
             log_main "  OK   $policy"
         else
             log_main "  FAIL $policy — see build_${policy}.log"
-            echo "[$( ts)] ACTION REQUIRED  policy=$policy  reason=\"build failed\"  log=build_${policy}.log" >> "$RUN_DIR/execution.log"
+            echo "[$(ts)] ACTION REQUIRED  policy=$policy  reason=\"build failed\"  log=build_${policy}.log" >> "$RUN_DIR/execution.log"
         fi
     done
 }
@@ -156,7 +141,7 @@ run_one_task() {
 
     # Run champsim
     local exit_code=0
-    "$binary" --warmup-instructions "$warmup" --simulation-instructions "$simulation" "$trace" \
+    "$binary" -warmup_instructions "$warmup" -simulation_instructions "$simulation" -traces "$trace" \
         > "$raw" 2>&1 || exit_code=$?
 
     local end_ms
@@ -166,15 +151,15 @@ run_one_task() {
     # Parse IPC from raw output
     local ipc="N/A"
     if [[ $exit_code -eq 0 ]]; then
-        ipc=$(grep -oP 'cumulative IPC: \K[0-9.]+' "$raw" | tail -1)
+        ipc=$(grep -oP 'CPU 0 cumulative IPC: \K[0-9.]+' "$raw" | tail -1)
         [[ -z "$ipc" ]] && ipc="N/A"
     fi
 
     # Parse LLC stats
     local llc_access="N/A" llc_miss="N/A"
     if [[ $exit_code -eq 0 ]]; then
-        llc_access=$(grep -oP 'cpu0->LLC\s+TOTAL\s+ACCESS:\s+\K[0-9]+' "$raw" || echo "N/A")
-        llc_miss=$(grep -oP 'cpu0->LLC\s+TOTAL\s+ACCESS:\s+[0-9]+\s+HIT:\s+[0-9]+\s+MISS:\s+\K[0-9]+' "$raw" || echo "N/A")
+        llc_access=$(grep -oP 'LLC TOTAL\s+ACCESS:\s+\K[0-9]+' "$raw" || echo "N/A")
+        llc_miss=$(grep -oP 'LLC TOTAL\s+ACCESS:\s+[0-9]+\s+HIT:\s+[0-9]+\s+MISS:\s+\K[0-9]+' "$raw" || echo "N/A")
     fi
 
     # Write data.jsonl (use python for safe JSON encoding)
@@ -227,11 +212,7 @@ summary_csv = sys.argv[2]
 geomean_csv = sys.argv[3]
 main_log = sys.argv[4]
 
-policies_order = [
-    'lru', 'srrip', 'drrip', 'ship', 'hawkeye', 'mockingjay', 'random',
-    'set_dueling_lru_srrip', 'set_dueling_mj_hk',
-    'set_dueling_4p_lssh', 'set_dueling_4p_lssm'
-]
+policies_order = ['lru', 'srrip', 'drrip', 'ship', 'hawkeye', 'mockingjay', 'set_dueling_lru_srrip', 'set_dueling_mj_hk', 'set_dueling_4p_lssh', 'set_dueling_4p_lssm']
 
 # Read all data.jsonl files
 rows = []
@@ -370,8 +351,8 @@ generate_conclusions() {
     content+="|-----------|-------|"$'\n'
     content+="| Warmup | ${WARMUP} instructions |"$'\n'
     content+="| Simulation | ${SIMULATION} instructions |"$'\n'
-    content+="| Traces | 36 (12 programs x 3 slices) |"$'\n'
-    content+="| Policies | 11 (7 standalone + 4 set-dueling) |"$'\n'
+    content+="| Traces | ${TOTAL_TRACES} |"$'\n'
+    content+="| Policies | ${#POLICY_NAMES[@]} |"$'\n'
     content+="| Parallel | ${PARALLEL} slots |"$'\n'
     content+=$'\n'
 
