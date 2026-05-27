@@ -1,6 +1,7 @@
 #ifndef VMEM_H
 #define VMEM_H
 
+#include <cstdint>
 #include <iostream>
 #include <deque>
 #include <map>
