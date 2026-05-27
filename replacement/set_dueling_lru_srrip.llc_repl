@@ -1,0 +1,195 @@
+// set_dueling_lru_srrip.llc_repl
+// 2-policy Set Dueling: LRU vs SRRIP
+// Self-contained for previous-branch build system (build_champsim.sh)
+#include "cache.h"
+#include <cstdlib>
+#include <ctime>
+#include <algorithm>
+
+// ── SDM Constants ──
+#define SD_SDM_SIZE  32
+#define SD_PSEL_WIDTH 10
+#define SD_PSEL_MAX   ((1 << SD_PSEL_WIDTH) - 1)
+#define SD_PSEL_MID   (SD_PSEL_MAX / 2)
+
+// ── SRRIP State (prefixed) ──
+#define SD_SRRIP_maxRRPV 3
+uint32_t sd_srrip_rrpv[LLC_SET][LLC_WAY];
+
+// ── SDM State ──
+// leader_policy[set]: -1 = follower, 0 = leader for LRU, 1 = leader for SRRIP
+int sd_leader_policy[LLC_SET];
+// PSEL[0]: 0 = prefer LRU, SD_PSEL_MAX = prefer SRRIP
+uint32_t sd_psel[NUM_CPUS];
+
+// ── LRU helpers (LRU is the default policy, no extra state needed) ──
+static uint32_t sd_lru_find_victim(uint32_t set, const BLOCK *current_set)
+{
+    for (int i = 0; i < LLC_WAY; i++)
+        if (current_set[i].valid == false)
+            return i;
+    return 0;  // fallback: way 0 (LRU is handled by cache's built-in aging)
+}
+
+static void sd_lru_update(uint32_t set, uint32_t way, bool hit)
+{
+    // LRU has no extra per-line state; no-op
+    (void)set; (void)way; (void)hit;
+}
+
+// ── SRRIP helpers ──
+static uint32_t sd_srrip_find_victim(uint32_t set, const BLOCK *current_set)
+{
+    (void)current_set;
+    while (1) {
+        for (int i = 0; i < LLC_WAY; i++)
+            if (sd_srrip_rrpv[set][i] == SD_SRRIP_maxRRPV)
+                return i;
+        for (int i = 0; i < LLC_WAY; i++)
+            sd_srrip_rrpv[set][i]++;
+    }
+}
+
+static void sd_srrip_update(uint32_t set, uint32_t way, bool hit)
+{
+    if (hit)
+        sd_srrip_rrpv[set][way] = 0;
+    else
+        sd_srrip_rrpv[set][way] = SD_SRRIP_maxRRPV - 1;
+}
+
+// ── SDM helpers ──
+static int sd_get_leader(uint32_t set)
+{
+    return sd_leader_policy[set];
+}
+
+static int sd_get_best(uint32_t cpu)
+{
+    // 2-policy: PSEL > midpoint = prefer SRRIP (policy 1)
+    return (sd_psel[cpu] > SD_PSEL_MID) ? 1 : 0;
+}
+
+// ══════════════════════════════════════════════════════════════
+// CACHE member functions
+// ══════════════════════════════════════════════════════════════
+
+void CACHE::llc_initialize_replacement()
+{
+    cout << "Initialize Set Dueling (LRU vs SRRIP) state" << endl;
+
+    // Init SRRIP state
+    for (int i = 0; i < LLC_SET; i++)
+        for (int j = 0; j < LLC_WAY; j++)
+            sd_srrip_rrpv[i][j] = SD_SRRIP_maxRRPV;
+
+    // Init leader_policy: -1 = follower
+    for (int i = 0; i < LLC_SET; i++)
+        sd_leader_policy[i] = -1;
+
+    // Randomly select SDM_SIZE leader sets per policy (no overlap)
+    srand(time(NULL));
+    unsigned long rand_seed = 1;
+    unsigned long max_rand = 1048576;
+    uint32_t total_sdm = 2 * SD_SDM_SIZE;  // 2 policies
+
+    uint32_t *chosen = (uint32_t *)malloc(total_sdm * sizeof(uint32_t));
+    for (uint32_t i = 0; i < total_sdm; i++) {
+        int dup;
+        do {
+            dup = 0;
+            rand_seed = rand_seed * 1103515245 + 12345;
+            chosen[i] = ((unsigned)((rand_seed / 65536) % max_rand)) % (LLC_SET);
+            for (uint32_t j = 0; j < i; j++) {
+                if (chosen[i] == chosen[j]) { dup = 1; break; }
+            }
+        } while (dup);
+    }
+
+    // First SDM_SIZE sets = LRU leaders, next SDM_SIZE = SRRIP leaders
+    for (uint32_t i = 0; i < SD_SDM_SIZE; i++)
+        sd_leader_policy[chosen[i]] = 0;
+    for (uint32_t i = 0; i < SD_SDM_SIZE; i++)
+        sd_leader_policy[chosen[SD_SDM_SIZE + i]] = 1;
+
+    free(chosen);
+
+    // Init PSEL to midpoint
+    for (int i = 0; i < NUM_CPUS; i++)
+        sd_psel[i] = SD_PSEL_MID;
+}
+
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                 const BLOCK *current_set, uint64_t ip,
+                                 uint64_t full_addr, uint32_t type)
+{
+    (void)cpu; (void)instr_id; (void)ip; (void)full_addr; (void)type;
+
+    int leader = sd_get_leader(set);
+    if (leader == 0) {
+        // LRU leader set
+        return sd_lru_find_victim(set, current_set);
+    } else if (leader == 1) {
+        // SRRIP leader set
+        return sd_srrip_find_victim(set, current_set);
+    } else {
+        // Follower set: use best policy
+        int best = sd_get_best(cpu);
+        if (best == 0)
+            return sd_lru_find_victim(set, current_set);
+        else
+            return sd_srrip_find_victim(set, current_set);
+    }
+}
+
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way,
+                                          uint64_t full_addr, uint64_t ip,
+                                          uint64_t victim_addr, uint32_t type,
+                                          uint8_t hit)
+{
+    (void)full_addr; (void)ip; (void)victim_addr;
+
+    if (type == WRITEBACK) {
+        // Still update both sub-policies on WB so state stays consistent
+        sd_lru_update(set, way, hit);
+        sd_srrip_update(set, way, hit);
+        return;
+    }
+
+    int leader = sd_get_leader(set);
+
+    if (hit) {
+        if (leader >= 0) {
+            // Hit on leader set: update only that policy
+            if (leader == 0) sd_lru_update(set, way, true);
+            else             sd_srrip_update(set, way, true);
+        } else {
+            // Hit on follower: update both
+            sd_lru_update(set, way, true);
+            sd_srrip_update(set, way, true);
+        }
+    } else {
+        // Miss: update both policies' state
+        sd_lru_update(set, way, false);
+        sd_srrip_update(set, way, false);
+
+        // PSEL update on leader set miss
+        if (leader == 0) {
+            // LRU leader miss → shift toward SRRIP
+            if (sd_psel[cpu] < SD_PSEL_MAX) sd_psel[cpu]++;
+        } else if (leader == 1) {
+            // SRRIP leader miss → shift toward LRU
+            if (sd_psel[cpu] > 0) sd_psel[cpu]--;
+        }
+    }
+}
+
+void CACHE::llc_replacement_final_stats()
+{
+    cout << "Set Dueling (LRU vs SRRIP) final PSEL: ";
+    for (int i = 0; i < NUM_CPUS; i++)
+        cout << sd_psel[i] << " ";
+    cout << endl;
+    int best = sd_get_best(0);
+    cout << "Best policy: " << (best == 0 ? "LRU" : "SRRIP") << endl;
+}

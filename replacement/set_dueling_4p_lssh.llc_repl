@@ -1,0 +1,360 @@
+// set_dueling_4p_lssh.llc_repl
+// 4-policy Set Dueling: LRU + SRRIP + SHIP + Hawkeye
+// Self-contained for previous-branch build system (build_champsim.sh)
+#include "cache.h"
+#include <cstdlib>
+#include <ctime>
+#include <vector>
+#include <map>
+
+static constexpr int sd_log2(int n) { return (n <= 1) ? 0 : 1 + sd_log2(n / 2); }
+
+// ── SDM Constants ──
+#define SD_SDM_SIZE     32
+#define SD_PSEL_WIDTH   10
+#define SD_PSEL_MAX     ((1 << SD_PSEL_WIDTH) - 1)
+#define SD_NUM_POLICIES 4
+
+// PSEL[cpu][policy_idx] — absolute performance counter
+uint32_t sd_psel[NUM_CPUS][SD_NUM_POLICIES];
+int      sd_leader_policy[LLC_SET];  // -1 = follower, 0..3 = leader for policy
+
+// ══════════════════════════════════════════════════════════════
+// Policy 0: LRU (minimal state)
+// ══════════════════════════════════════════════════════════════
+static uint32_t p0_find_victim(uint32_t set, const BLOCK *current_set) {
+    for (int i = 0; i < LLC_WAY; i++) if (!current_set[i].valid) return i;
+    return 0;
+}
+static void p0_update(uint32_t, uint32_t, bool) {}
+
+// ══════════════════════════════════════════════════════════════
+// Policy 1: SRRIP
+// ══════════════════════════════════════════════════════════════
+#define P1_maxRRPV 3
+uint32_t p1_rrpv[LLC_SET][LLC_WAY];
+static uint32_t p1_find_victim(uint32_t set, const BLOCK *) {
+    while (1) {
+        for (int i = 0; i < LLC_WAY; i++) if (p1_rrpv[set][i] == P1_maxRRPV) return i;
+        for (int i = 0; i < LLC_WAY; i++) p1_rrpv[set][i]++;
+    }
+}
+static void p1_update(uint32_t set, uint32_t way, bool hit) {
+    p1_rrpv[set][way] = hit ? 0 : P1_maxRRPV - 1;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Policy 2: SHIP
+// ══════════════════════════════════════════════════════════════
+#define P2_maxRRPV 3
+#define P2_SHCT_SIZE  16384
+#define P2_SHCT_PRIME 16381
+#define P2_SAMPLER_SET (256*NUM_CPUS)
+#define P2_SAMPLER_WAY LLC_WAY
+#define P2_SHCT_MAX 7
+
+uint32_t p2_rrpv[LLC_SET][LLC_WAY];
+struct P2_SAMPLER { uint8_t valid, type, used; uint64_t tag, cl_addr, ip; uint32_t lru; };
+uint32_t p2_rand_sets[P2_SAMPLER_SET];
+P2_SAMPLER p2_sampler[P2_SAMPLER_SET][P2_SAMPLER_WAY];
+struct P2_SHCT { uint32_t counter; };
+P2_SHCT p2_SHCT[NUM_CPUS][P2_SHCT_SIZE];
+
+static uint32_t p2_is_sampled(uint32_t set) {
+    for (int i = 0; i < P2_SAMPLER_SET; i++)
+        if (p2_rand_sets[i] == set) return i;
+    return P2_SAMPLER_SET;
+}
+
+static void p2_update_sampler(uint32_t cpu, uint32_t s_idx, uint64_t address, uint64_t ip, uint8_t type) {
+    P2_SAMPLER *s_set = p2_sampler[s_idx];
+    uint64_t tag = address / (64LL * LLC_SET);
+    int match = -1;
+    for (match = 0; match < P2_SAMPLER_WAY; match++) {
+        if (s_set[match].valid && s_set[match].tag == tag) {
+            uint32_t idx = s_set[match].ip % P2_SHCT_PRIME;
+            if (p2_SHCT[cpu][idx].counter > 0) p2_SHCT[cpu][idx].counter--;
+            s_set[match].type = type;
+            s_set[match].used = 1;
+            break;
+        }
+    }
+    if (match == P2_SAMPLER_WAY) {
+        for (match = 0; match < P2_SAMPLER_WAY; match++) {
+            if (!s_set[match].valid) {
+                s_set[match].valid = 1; s_set[match].tag = tag;
+                s_set[match].ip = ip; s_set[match].type = type; s_set[match].used = 0;
+                break;
+            }
+        }
+    }
+    if (match == P2_SAMPLER_WAY) {
+        for (match = 0; match < P2_SAMPLER_WAY; match++) {
+            if (s_set[match].lru == (P2_SAMPLER_WAY - 1)) {
+                if (!s_set[match].used) {
+                    uint32_t idx = s_set[match].ip % P2_SHCT_PRIME;
+                    if (p2_SHCT[cpu][idx].counter < P2_SHCT_MAX) p2_SHCT[cpu][idx].counter++;
+                }
+                s_set[match].tag = tag; s_set[match].ip = ip;
+                s_set[match].type = type; s_set[match].used = 0;
+                break;
+            }
+        }
+    }
+    uint32_t curr = s_set[match].lru;
+    for (int i = 0; i < P2_SAMPLER_WAY; i++)
+        if (s_set[i].lru < curr) s_set[i].lru++;
+    s_set[match].lru = 0;
+}
+
+static uint32_t p2_find_victim(uint32_t set, const BLOCK *current_set) {
+    (void)current_set;
+    while (1) {
+        for (int i = 0; i < LLC_WAY; i++)
+            if (p2_rrpv[set][i] == P2_maxRRPV) return i;
+        for (int i = 0; i < LLC_WAY; i++) p2_rrpv[set][i]++;
+    }
+}
+
+static void p2_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr,
+                       uint64_t ip, uint32_t type, bool hit) {
+    if (type == WRITEBACK) { if (!hit) p2_rrpv[set][way] = P2_maxRRPV - 1; return; }
+    uint32_t s_idx = p2_is_sampled(set);
+    if (s_idx < P2_SAMPLER_SET) p2_update_sampler(cpu, s_idx, full_addr, ip, type);
+    if (hit) { p2_rrpv[set][way] = 0; }
+    else {
+        uint32_t idx = ip % P2_SHCT_PRIME;
+        p2_rrpv[set][way] = (p2_SHCT[cpu][idx].counter == P2_SHCT_MAX) ? P2_maxRRPV : P2_maxRRPV - 1;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Policy 3: Hawkeye
+// ══════════════════════════════════════════════════════════════
+#define P3_maxRRPV     7
+#define P3_MAX_SHCT    31
+#define P3_SHCT_SIZE   (1 << 11)
+#define P3_OPTGEN_VEC  128
+#define P3_TIMER_SIZE  1024
+#define P3_SAMPLER_WAYS 8
+#define P3_SAMPLER_SETS (2800 / P3_SAMPLER_WAYS)
+
+uint32_t p3_rrpv[LLC_SET][LLC_WAY];
+uint64_t p3_mytimer[LLC_SET];
+uint64_t p3_signatures[LLC_SET][LLC_WAY];
+bool     p3_prefetched[LLC_SET][LLC_WAY];
+
+struct P3_OPTgen {
+    std::vector<unsigned int> lh; uint64_t nc, ndc, acc, CS;
+    void init(uint64_t s) { nc = ndc = acc = 0; CS = s; lh.resize(P3_OPTGEN_VEC, 0); }
+    void add_access(uint64_t q) { acc++; lh[q] = 0; }
+    void add_prefetch(uint64_t q) { lh[q] = 0; }
+    bool should_cache(uint64_t cq, uint64_t lq) {
+        bool c = true; unsigned int i = lq;
+        while (i != cq) { if (lh[i] >= CS) { c = false; break; } i = (i + 1) % lh.size(); }
+        if (c) { i = lq; while (i != cq) { lh[i]++; i = (i + 1) % lh.size(); } }
+        if (c) nc++; else ndc++; return c;
+    }
+};
+P3_OPTgen p3_optgen[LLC_SET];
+
+static uint64_t p3_crc(uint64_t a) {
+    const unsigned long long P = 3988292384ULL;
+    unsigned long long r = a;
+    for (int i = 0; i < 32; i++) r = (r & 1) ? ((r >> 1) ^ P) : (r >> 1);
+    return r;
+}
+
+struct P3_ADDR { uint64_t addr, PC; uint32_t lq, lru; bool pf;
+    void init(unsigned int) { lq = 0; PC = 0; pf = false; lru = 0; }
+    void mark_prefetch() { pf = true; }
+    void update(unsigned int q, uint64_t _pc, bool) { lq = q; PC = _pc; }
+};
+std::vector<std::map<uint64_t, P3_ADDR>> p3_ah;
+
+class P3_PRED {
+    std::map<uint64_t, unsigned short> t;
+public:
+    void inc(uint64_t pc) { uint64_t s = p3_crc(pc) % P3_SHCT_SIZE; if (!t.count(s)) t[s] = (1 + P3_MAX_SHCT) / 2; if (t[s] < P3_MAX_SHCT) t[s]++; }
+    void dec(uint64_t pc) { uint64_t s = p3_crc(pc) % P3_SHCT_SIZE; if (!t.count(s)) t[s] = (1 + P3_MAX_SHCT) / 2; if (t[s]) t[s]--; }
+    bool pred(uint64_t pc) { uint64_t s = p3_crc(pc) % P3_SHCT_SIZE; return !(t.count(s) && t[s] < ((P3_MAX_SHCT + 1) / 2)); }
+};
+P3_PRED *p3_dp, *p3_pp;
+
+static bool p3_is_sampled_set(uint32_t set) {
+    constexpr int us = sd_log2(LLC_SET) - 6;
+    return (set & 0x3F) == ((set >> (unsigned)us) & 0x3F);
+}
+
+static void p3_evict_addr(unsigned int ss) { uint64_t a = 0; for (auto &kv : p3_ah[ss]) { if (kv.second.lru == P3_SAMPLER_WAYS - 1) { a = kv.first; break; } } p3_ah[ss].erase(a); }
+static void p3_update_lru(unsigned int ss, unsigned int cl) { for (auto &kv : p3_ah[ss]) if (kv.second.lru < cl) kv.second.lru++; }
+
+static uint32_t p3_find_victim(uint32_t cpu, uint64_t, uint32_t set, const BLOCK *cs, uint64_t, uint64_t, uint32_t) {
+    (void)cpu;
+    for (uint32_t w = 0; w < (uint32_t)LLC_WAY; w++) if (!cs[w].valid) return w;
+    for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++) if (p3_rrpv[set][i] == P3_maxRRPV) return i;
+    uint32_t mr = 0; int32_t lv = -1;
+    for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++) { if (p3_rrpv[set][i] >= mr) { mr = p3_rrpv[set][i]; lv = i; } }
+    if (p3_is_sampled_set(set) && lv >= 0) {
+        if (p3_prefetched[set][lv]) p3_pp->dec(p3_signatures[set][lv]); else p3_dp->dec(p3_signatures[set][lv]);
+    }
+    return lv;
+}
+
+static void p3_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t fa, uint64_t ip, uint64_t, uint32_t type, bool hit) {
+    fa = (fa >> 6) << 6;
+    if (type == PREFETCH) { if (!hit) p3_prefetched[set][way] = true; } else p3_prefetched[set][way] = false;
+    if (type == WRITEBACK) return;
+    if (p3_is_sampled_set(set)) {
+        uint64_t cq = p3_mytimer[set] % P3_OPTGEN_VEC;
+        uint32_t ss = (fa >> 6) % P3_SAMPLER_SETS; uint64_t st = p3_crc(fa >> 12) % 256;
+        if (p3_ah[ss].count(st) && type != PREFETCH) {
+            unsigned int ct = p3_mytimer[set];
+            if (ct < p3_ah[ss][st].lq) ct += P3_TIMER_SIZE;
+            bool w = (ct - p3_ah[ss][st].lq > P3_OPTGEN_VEC);
+            uint64_t lq = p3_ah[ss][st].lq % P3_OPTGEN_VEC;
+            if (!w && p3_optgen[set].should_cache(cq, lq)) { if (p3_ah[ss][st].pf) p3_pp->inc(p3_ah[ss][st].PC); else p3_dp->inc(p3_ah[ss][st].PC); }
+            else { if (p3_ah[ss][st].pf) p3_pp->dec(p3_ah[ss][st].PC); else p3_dp->dec(p3_ah[ss][st].PC); }
+            p3_optgen[set].add_access(cq); p3_update_lru(ss, p3_ah[ss][st].lru); p3_ah[ss][st].pf = false;
+        } else if (!p3_ah[ss].count(st)) {
+            if ((int)p3_ah[ss].size() == P3_SAMPLER_WAYS) p3_evict_addr(ss);
+            p3_ah[ss][st].init(cq); p3_ah[ss][st].lru = 0;
+            if (type == PREFETCH) { p3_ah[ss][st].mark_prefetch(); p3_optgen[set].add_prefetch(cq); }
+            else { p3_optgen[set].add_access(cq); }
+            p3_update_lru(ss, P3_SAMPLER_WAYS - 1);
+        } else {
+            uint64_t lq = p3_ah[ss][st].lq % P3_OPTGEN_VEC;
+            if (p3_mytimer[set] - p3_ah[ss][st].lq < 5 * NUM_CPUS) {
+                if (p3_optgen[set].should_cache(cq, lq)) { if (p3_ah[ss][st].pf) p3_pp->inc(p3_ah[ss][st].PC); else p3_dp->inc(p3_ah[ss][st].PC); }
+            }
+            p3_ah[ss][st].mark_prefetch(); p3_optgen[set].add_prefetch(cq);
+            p3_update_lru(ss, p3_ah[ss][st].lru);
+        }
+        bool np = (type == PREFETCH) ? p3_pp->pred(ip) : p3_dp->pred(ip);
+        p3_ah[ss][st].update(p3_mytimer[set], ip, np); p3_ah[ss][st].lru = 0;
+        p3_mytimer[set] = (p3_mytimer[set] + 1) % P3_TIMER_SIZE;
+    }
+    bool np = (type == PREFETCH) ? p3_pp->pred(ip) : p3_dp->pred(ip);
+    p3_signatures[set][way] = ip;
+    if (!np) { p3_rrpv[set][way] = P3_maxRRPV; } else {
+        p3_rrpv[set][way] = 0;
+        if (!hit) { bool sat = false; for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++) if (p3_rrpv[set][i] == P3_maxRRPV - 1) sat = true;
+        for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++) if (!sat && p3_rrpv[set][i] < P3_maxRRPV - 1) p3_rrpv[set][i]++; }
+        p3_rrpv[set][way] = 0;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// SDM Dispatch
+// ══════════════════════════════════════════════════════════════
+static int sd_get_leader(uint32_t set) { return sd_leader_policy[set]; }
+static int sd_get_best(uint32_t cpu) {
+    int best = 0;
+    for (int i = 1; i < SD_NUM_POLICIES; i++)
+        if (sd_psel[cpu][i] > sd_psel[cpu][best]) best = i;
+    return best;
+}
+
+typedef uint32_t (*victim_fn)(uint32_t, const BLOCK *);
+typedef uint32_t (*victim_fn_full)(uint32_t, uint64_t, uint32_t, const BLOCK *, uint64_t, uint64_t, uint32_t);
+typedef void (*update_fn)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint32_t, bool);
+typedef void (*update_fn_full)(uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint64_t, uint32_t, bool);
+
+// We need adapters. p0/p1 don't use all params.
+static uint32_t p2_find_victim_adapt(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p2_find_victim(c,d); }
+static uint32_t p0_find_victim_adapt(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p0_find_victim(c,d); }
+static uint32_t p1_find_victim_adapt(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p1_find_victim(c,d); }
+
+static void p0_update_adapt(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { (void)a;(void)d;(void)e;(void)f; p0_update(b,c,g); }
+static void p1_update_adapt(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { (void)a;(void)d;(void)e;(void)f; p1_update(b,c,g); }
+static void p2_update_adapt(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { p2_update(a,b,c,d,e,f,g); }
+static void p3_update_adapt(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint64_t f, uint32_t g, bool h) { p3_update(a,b,c,d,e,f,g,h); }
+
+static victim_fn_full victim_funcs[4] = {p0_find_victim_adapt, p1_find_victim_adapt, p2_find_victim_adapt, p3_find_victim};
+
+// ══════════════════════════════════════════════════════════════
+// CACHE members
+// ══════════════════════════════════════════════════════════════
+void CACHE::llc_initialize_replacement()
+{
+    cout << "Initialize Set Dueling 4P (LRU+SRRIP+SHIP+Hawkeye)" << endl;
+    for (int i = 0; i < LLC_SET; i++) {
+        for (int j = 0; j < LLC_WAY; j++) {
+            p1_rrpv[i][j] = P1_maxRRPV;
+            p2_rrpv[i][j] = P2_maxRRPV;
+            p3_rrpv[i][j] = P3_maxRRPV;
+            p3_signatures[i][j] = 0;
+            p3_prefetched[i][j] = false;
+        }
+        p3_mytimer[i] = 0; p3_optgen[i].init(LLC_WAY - 2);
+    }
+    for (int i = 0; i < P2_SAMPLER_SET; i++)
+        for (int j = 0; j < P2_SAMPLER_WAY; j++)
+            p2_sampler[i][j].lru = j;
+
+    p3_ah.resize(P3_SAMPLER_SETS);
+    p3_dp = new P3_PRED(); p3_pp = new P3_PRED();
+
+    // Randomly select SDM_SIZE leader sets per policy
+    srand(time(NULL));
+    unsigned long rs = 1;
+    uint32_t total = SD_NUM_POLICIES * SD_SDM_SIZE;
+    uint32_t *ch = (uint32_t *)malloc(total * sizeof(uint32_t));
+    for (uint32_t i = 0; i < total; i++) {
+        int dup;
+        do {
+            dup = 0;
+            rs = rs * 1103515245 + 12345;
+            ch[i] = ((unsigned)((rs / 65536) % 1048576)) % (LLC_SET);
+            for (uint32_t j = 0; j < i; j++) if (ch[i] == ch[j]) { dup = 1; break; }
+        } while (dup);
+    }
+    for (int i = 0; i < LLC_SET; i++) sd_leader_policy[i] = -1;
+    for (int p = 0; p < SD_NUM_POLICIES; p++)
+        for (uint32_t i = 0; i < SD_SDM_SIZE; i++)
+            sd_leader_policy[ch[p * SD_SDM_SIZE + i]] = p;
+    // Also assign SHIP sampler sets as P2 leaders
+    for (int i = 0; i < P2_SAMPLER_SET; i++) p2_rand_sets[i] = ch[2 * SD_SDM_SIZE + i % SD_SDM_SIZE];
+    free(ch);
+
+    for (int i = 0; i < NUM_CPUS; i++)
+        for (int p = 0; p < SD_NUM_POLICIES; p++)
+            sd_psel[i][p] = SD_PSEL_MAX / 2;
+}
+
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                 const BLOCK *current_set, uint64_t ip,
+                                 uint64_t full_addr, uint32_t type)
+{
+    int leader = sd_get_leader(set);
+    int idx = (leader >= 0) ? leader : sd_get_best(cpu);
+    return victim_funcs[idx](cpu, instr_id, set, current_set, ip, full_addr, type);
+}
+
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way,
+                                          uint64_t full_addr, uint64_t ip,
+                                          uint64_t victim_addr, uint32_t type,
+                                          uint8_t hit)
+{
+    // Update all policies (keep state in sync)
+    p0_update_adapt(cpu, set, way, full_addr, ip, type, hit);
+    p1_update_adapt(cpu, set, way, full_addr, ip, type, hit);
+    p2_update_adapt(cpu, set, way, full_addr, ip, type, hit);
+    p3_update_adapt(cpu, set, way, full_addr, ip, victim_addr, type, hit);
+
+    if (type == WRITEBACK) return;
+
+    // PSEL: on leader set miss, penalize that policy
+    int leader = sd_get_leader(set);
+    if (!hit && leader >= 0 && sd_psel[cpu][leader] > 0)
+        sd_psel[cpu][leader]--;
+}
+
+void CACHE::llc_replacement_final_stats()
+{
+    cout << "Set Dueling 4P (LRU+SRRIP+SHIP+Hawkeye)" << endl;
+    cout << "  PSEL: ";
+    for (int p = 0; p < SD_NUM_POLICIES; p++) cout << sd_psel[0][p] << " ";
+    cout << endl;
+    cout << "  Best: policy " << sd_get_best(0) << endl;
+}

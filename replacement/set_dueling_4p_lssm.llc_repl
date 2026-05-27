@@ -1,0 +1,178 @@
+// set_dueling_4p_lssm.llc_repl
+// 4-policy Set Dueling: LRU + SRRIP + SHIP + Mockingjay
+// Self-contained for previous-branch build system (build_champsim.sh)
+// Policies 0-2 (LRU/SRRIP/SHIP) same as lssh; Policy 3 = Mockingjay
+#include "cache.h"
+#include <cstdlib>
+#include <ctime>
+#include <cmath>
+
+static constexpr int sd_log2(int n) { return (n <= 1) ? 0 : 1 + sd_log2(n / 2); }
+
+#define SD_SDM_SIZE     32
+#define SD_PSEL_WIDTH   10
+#define SD_PSEL_MAX     ((1 << SD_PSEL_WIDTH) - 1)
+#define SD_NUM_POLICIES 4
+
+uint32_t sd_psel[NUM_CPUS][SD_NUM_POLICIES];
+int      sd_leader_policy[LLC_SET];
+
+// ══════════ Policy 0: LRU ══════════
+static uint32_t p0_find_victim(uint32_t set, const BLOCK *current_set) {
+    for (int i = 0; i < LLC_WAY; i++) if (!current_set[i].valid) return i;
+    return 0;
+}
+static void p0_update(uint32_t, uint32_t, bool) {}
+
+// ══════════ Policy 1: SRRIP ══════════
+#define P1_maxRRPV 3
+uint32_t p1_rrpv[LLC_SET][LLC_WAY];
+static uint32_t p1_find_victim(uint32_t set, const BLOCK *) {
+    while (1) { for (int i = 0; i < LLC_WAY; i++) if (p1_rrpv[set][i] == P1_maxRRPV) return i; for (int i = 0; i < LLC_WAY; i++) p1_rrpv[set][i]++; }
+}
+static void p1_update(uint32_t set, uint32_t way, bool hit) { p1_rrpv[set][way] = hit ? 0 : P1_maxRRPV - 1; }
+
+// ══════════ Policy 2: SHIP ══════════
+#define P2_maxRRPV 3
+#define P2_SHCT_SIZE  16384
+#define P2_SHCT_PRIME 16381
+#define P2_SAMPLER_SET (256*NUM_CPUS)
+#define P2_SAMPLER_WAY LLC_WAY
+#define P2_SHCT_MAX 7
+
+uint32_t p2_rrpv[LLC_SET][LLC_WAY];
+struct P2_SAMPLER { uint8_t valid, type, used; uint64_t tag, cl_addr, ip; uint32_t lru; };
+uint32_t p2_rand_sets[P2_SAMPLER_SET];
+P2_SAMPLER p2_sampler[P2_SAMPLER_SET][P2_SAMPLER_WAY];
+struct P2_SHCT { uint32_t counter; };
+P2_SHCT p2_SHCT[NUM_CPUS][P2_SHCT_SIZE];
+
+static uint32_t p2_is_sampled(uint32_t set) { for (int i = 0; i < P2_SAMPLER_SET; i++) if (p2_rand_sets[i] == set) return i; return P2_SAMPLER_SET; }
+static void p2_update_sampler(uint32_t cpu, uint32_t s_idx, uint64_t address, uint64_t ip, uint8_t type) {
+    P2_SAMPLER *s_set = p2_sampler[s_idx]; uint64_t tag = address / (64LL * LLC_SET); int match = -1;
+    for (match = 0; match < P2_SAMPLER_WAY; match++) { if (s_set[match].valid && s_set[match].tag == tag) { uint32_t idx = s_set[match].ip % P2_SHCT_PRIME; if (p2_SHCT[cpu][idx].counter > 0) p2_SHCT[cpu][idx].counter--; s_set[match].type = type; s_set[match].used = 1; break; } }
+    if (match == P2_SAMPLER_WAY) { for (match = 0; match < P2_SAMPLER_WAY; match++) { if (!s_set[match].valid) { s_set[match].valid = 1; s_set[match].tag = tag; s_set[match].ip = ip; s_set[match].type = type; s_set[match].used = 0; break; } } }
+    if (match == P2_SAMPLER_WAY) {
+        for (match = 0; match < P2_SAMPLER_WAY; match++) { if (s_set[match].lru == (P2_SAMPLER_WAY - 1)) { if (!s_set[match].used) { uint32_t idx = s_set[match].ip % P2_SHCT_PRIME; if (p2_SHCT[cpu][idx].counter < P2_SHCT_MAX) p2_SHCT[cpu][idx].counter++; } s_set[match].tag = tag; s_set[match].ip = ip; s_set[match].type = type; s_set[match].used = 0; break; } }
+    }
+    uint32_t curr = s_set[match].lru; for (int i = 0; i < P2_SAMPLER_WAY; i++) if (s_set[i].lru < curr) s_set[i].lru++; s_set[match].lru = 0;
+}
+static uint32_t p2_find_victim(uint32_t set, const BLOCK *cs) { (void)cs; while (1) { for (int i = 0; i < LLC_WAY; i++) if (p2_rrpv[set][i] == P2_maxRRPV) return i; for (int i = 0; i < LLC_WAY; i++) p2_rrpv[set][i]++; } }
+static void p2_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t fa, uint64_t ip, uint32_t type, bool hit) {
+    if (type == WRITEBACK) { if (!hit) p2_rrpv[set][way] = P2_maxRRPV - 1; return; }
+    uint32_t s_idx = p2_is_sampled(set); if (s_idx < P2_SAMPLER_SET) p2_update_sampler(cpu, s_idx, fa, ip, type);
+    if (hit) { p2_rrpv[set][way] = 0; } else { uint32_t idx = ip % P2_SHCT_PRIME; p2_rrpv[set][way] = (p2_SHCT[cpu][idx].counter == P2_SHCT_MAX) ? P2_maxRRPV : P2_maxRRPV - 1; }
+}
+
+// ══════════ Policy 3: Mockingjay ══════════
+#define MJ_HISTORY 8
+#define MJ_GRANULARITY 8
+#define MJ_INF_RD  (LLC_WAY * MJ_HISTORY - 1)
+#define MJ_INF_ETR (LLC_WAY * MJ_HISTORY / MJ_GRANULARITY - 1)
+#define MJ_MAX_RD  (MJ_INF_RD - 22)
+
+int p3_etr[LLC_SET][LLC_WAY], p3_etr_clock[LLC_SET];
+bool p3_is_leader[LLC_SET];
+int p3_nev[LLC_SET][LLC_WAY], p3_rrp[LLC_SET][LLC_WAY][MJ_HISTORY], p3_rri[LLC_SET][LLC_WAY], p3_rrps[LLC_SET][LLC_WAY], p3_nh[LLC_SET][LLC_WAY];
+bool p3_is_ref[LLC_SET];
+static int p3_gm(int x, int n) { if (x <= 0) return 0; double g = 0; for (int i = 1; i <= n - 1; i++) g += sd_log2(x + i); g = g / (n - 1); double p = x; for (int i = 1; i < n; i++) p = p * (double)(x + i) / (double)(x) * pow(2, g) / (1 << (26 + sd_log2(x + i) + sd_log2(n) + 2)); return (int)p; }
+static int p3_norm(int x) { while (x > 127) x /= 2; while (x < 64) x *= 2; return x; }
+static int p3_mf(int r) { for (int i = 1; i <= 4; i++) r = (r * (MJ_HISTORY + i)) / i; for (int i = 0; i < 4; i++) r = (r * 2) / 3; return r; }
+static int p3_get_rd(int set, int way) { if (p3_rrps[set][way] < 1000) return 0; int ref = p3_rri[set][way]; if (ref == 0) return 0; int rd = p3_nh[set][way]; int ref2 = p3_mf(ref); int g_rd = p3_gm(rd, MJ_HISTORY); int g_ref = p3_gm(p3_norm(ref), MJ_HISTORY); int guess = (rd + g_rd + g_ref); return (guess > MJ_MAX_RD) ? MJ_MAX_RD : guess; }
+
+static uint32_t p3_find_victim(uint32_t cpu, uint64_t, uint32_t set, const BLOCK *cs, uint64_t, uint64_t, uint32_t) {
+    (void)cpu;
+    for (int i = 0; i < LLC_WAY; i++) if (!cs[i].valid) return i;
+    int min_i = 0, min_e = p3_etr[set][0];
+    for (int i = 1; i < LLC_WAY; i++) { if (p3_etr[set][i] < min_e) { min_e = p3_etr[set][i]; min_i = i; } }
+    return min_i;
+}
+
+static void p3_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t fa, uint64_t ip, uint32_t type, bool hit) {
+    (void)cpu; if (type == WRITEBACK) return; fa = (fa >> 6) << 6;
+    if (!p3_is_leader[set] && p3_rrps[set][way] < 1000) return;
+    if (hit) {
+        p3_rrps[set][way] = 0; int rd = p3_get_rd(set, way); p3_nh[set][way]++;
+        p3_is_ref[set] = true; p3_etr[set][way] = rd; p3_etr_clock[set] = 0;
+    } else {
+        if (p3_is_leader[set]) { p3_rrps[set][way] = p3_rri[set][way]; p3_rri[set][way] = 0; }
+        p3_etr[set][way] = MJ_INF_ETR;
+    }
+    for (int i = 0; i < LLC_WAY; i++) { p3_rri[set][i]++; if (p3_rri[set][i] > 1000000) p3_rri[set][i] = 1000000; }
+    p3_etr_clock[set]++; if (p3_etr_clock[set] % MJ_GRANULARITY == 0) { for (int i = 0; i < LLC_WAY; i++) if (p3_etr[set][i] < MJ_INF_ETR) p3_etr[set][i]++; }
+    if (!hit && p3_is_leader[set]) {
+        p3_nev[set][way]++; int rd = p3_get_rd(set, way);
+        for (int i = 0; i < MJ_HISTORY; i++) p3_rrp[set][way][i] = (i == 0) ? rd : p3_rrp[set][way][i - 1];
+        p3_nev[set][way] = 0;
+    }
+}
+
+// ══════════ Dispatch ══════════
+static int sd_get_leader(uint32_t set) { return sd_leader_policy[set]; }
+static int sd_get_best(uint32_t cpu) { int best = 0; for (int i = 1; i < SD_NUM_POLICIES; i++) if (sd_psel[cpu][i] > sd_psel[cpu][best]) best = i; return best; }
+
+typedef uint32_t (*vf)(uint32_t, uint64_t, uint32_t, const BLOCK *, uint64_t, uint64_t, uint32_t);
+static uint32_t p0_fv(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p0_find_victim(c,d); }
+static uint32_t p1_fv(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p1_find_victim(c,d); }
+static uint32_t p2_fv(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { (void)a;(void)b;(void)e;(void)f;(void)g; return p2_find_victim(c,d); }
+static uint32_t p3_fv(uint32_t a, uint64_t b, uint32_t c, const BLOCK *d, uint64_t e, uint64_t f, uint32_t g) { return p3_find_victim(a,b,c,d,e,f,g); }
+
+static void p0_ua(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { (void)a;(void)d;(void)e;(void)f; p0_update(b,c,g); }
+static void p1_ua(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { (void)a;(void)d;(void)e;(void)f; p1_update(b,c,g); }
+static void p2_ua(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint32_t f, bool g) { p2_update(a,b,c,d,e,f,g); }
+static void p3_ua(uint32_t a, uint32_t b, uint32_t c, uint64_t d, uint64_t e, uint64_t f, uint32_t g, bool h) { (void)f; p3_update(a,b,c,d,e,g,h); }
+
+static vf victim_funcs[4] = {p0_fv, p1_fv, p2_fv, p3_fv};
+
+// ══════════ CACHE members ══════════
+void CACHE::llc_initialize_replacement()
+{
+    cout << "Initialize Set Dueling 4P (LRU+SRRIP+SHIP+Mockingjay)" << endl;
+    for (int i = 0; i < LLC_SET; i++) {
+        for (int j = 0; j < LLC_WAY; j++) {
+            p1_rrpv[i][j] = P1_maxRRPV; p2_rrpv[i][j] = P2_maxRRPV;
+            p3_etr[i][j] = MJ_INF_ETR; p3_nev[i][j] = 0;
+            for (int k = 0; k < MJ_HISTORY; k++) p3_rrp[i][j][k] = 0;
+            p3_rri[i][j] = 0; p3_rrps[i][j] = 1000; p3_nh[i][j] = 0;
+        }
+        p3_etr_clock[i] = 0; p3_is_leader[i] = false; p3_is_ref[i] = false;
+    }
+    for (int i = 0; i < P2_SAMPLER_SET; i++)
+        for (int j = 0; j < P2_SAMPLER_WAY; j++)
+            p2_sampler[i][j].lru = j;
+
+    srand(time(NULL)); unsigned long rs = 1;
+    uint32_t total = SD_NUM_POLICIES * SD_SDM_SIZE;
+    uint32_t *ch = (uint32_t *)malloc(total * sizeof(uint32_t));
+    for (uint32_t i = 0; i < total; i++) { int dup; do { dup = 0; rs = rs * 1103515245 + 12345; ch[i] = ((unsigned)((rs / 65536) % 1048576)) % (LLC_SET); for (uint32_t j = 0; j < i; j++) if (ch[i] == ch[j]) { dup = 1; break; } } while (dup); }
+    for (int i = 0; i < LLC_SET; i++) sd_leader_policy[i] = -1;
+    for (int p = 0; p < SD_NUM_POLICIES; p++)
+        for (uint32_t i = 0; i < SD_SDM_SIZE; i++)
+            sd_leader_policy[ch[p * SD_SDM_SIZE + i]] = p;
+    for (int i = 0; i < P2_SAMPLER_SET; i++) p2_rand_sets[i] = ch[2 * SD_SDM_SIZE + i % SD_SDM_SIZE];
+    for (uint32_t i = 0; i < SD_SDM_SIZE; i++) p3_is_leader[ch[3 * SD_SDM_SIZE + i]] = true;
+    free(ch);
+    for (int i = 0; i < NUM_CPUS; i++) for (int p = 0; p < SD_NUM_POLICIES; p++) sd_psel[i][p] = SD_PSEL_MAX / 2;
+}
+
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *cs, uint64_t ip, uint64_t fa, uint32_t type)
+{ int leader = sd_get_leader(set); int idx = (leader >= 0) ? leader : sd_get_best(cpu); return victim_funcs[idx](cpu, instr_id, set, cs, ip, fa, type); }
+
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t fa, uint64_t ip, uint64_t va, uint32_t type, uint8_t hit)
+{
+    p0_ua(cpu, set, way, fa, ip, type, hit);
+    p1_ua(cpu, set, way, fa, ip, type, hit);
+    p2_ua(cpu, set, way, fa, ip, type, hit);
+    p3_ua(cpu, set, way, fa, ip, va, type, hit);
+    if (type == WRITEBACK) return;
+    int leader = sd_get_leader(set);
+    if (!hit && leader >= 0 && sd_psel[cpu][leader] > 0) sd_psel[cpu][leader]--;
+}
+
+void CACHE::llc_replacement_final_stats()
+{
+    cout << "Set Dueling 4P (LRU+SRRIP+SHIP+Mockingjay)" << endl;
+    cout << "  PSEL: ";
+    for (int p = 0; p < SD_NUM_POLICIES; p++) cout << sd_psel[0][p] << " ";
+    cout << endl << "  Best: policy " << sd_get_best(0) << endl;
+}

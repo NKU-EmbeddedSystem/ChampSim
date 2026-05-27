@@ -1,0 +1,500 @@
+// set_dueling_mj_hk.llc_repl
+// 2-policy Set Dueling: Mockingjay vs Hawkeye
+// Self-contained for previous-branch build system (build_champsim.sh)
+#include "cache.h"
+#include <cstdlib>
+#include <ctime>
+#include <vector>
+#include <map>
+#include <cmath>
+
+// ── Compile-time helpers ──
+static constexpr int sd_log2(int n) { return (n <= 1) ? 0 : 1 + sd_log2(n / 2); }
+
+// ── SDM Constants ──
+#define SD_SDM_SIZE        32
+#define SD_PSEL_WIDTH      10
+#define SD_PSEL_MAX        ((1 << SD_PSEL_WIDTH) - 1)
+#define SD_PSEL_MID        (SD_PSEL_MAX / 2)
+
+// ── PSEL ──
+uint32_t sd_psel[NUM_CPUS];
+int sd_leader_policy[LLC_SET];
+
+// ══════════════════════════════════════════════════════════════
+// Mockingjay State & Logic (policy index 0)
+// ══════════════════════════════════════════════════════════════
+#define MJ_HISTORY     8
+#define MJ_GRANULARITY 8
+#define MJ_INF_RD      (LLC_WAY * MJ_HISTORY - 1)
+#define MJ_INF_ETR     (LLC_WAY * MJ_HISTORY / MJ_GRANULARITY - 1)
+#define MJ_MAX_RD      (MJ_INF_RD - 22)
+#define MJ_FLEXMIN_PENALTY (int)(2.0 - sd_log2(NUM_CPUS) / 4.0)
+
+int  mj_etr[LLC_SET][LLC_WAY];
+int  mj_etr_clock[LLC_SET];
+bool mj_is_leader_set[LLC_SET];
+int  mj_num_eviction[LLC_SET][LLC_WAY];
+int  mj_ReReference_pred[LLC_SET][LLC_WAY][MJ_HISTORY];
+int  mj_ReReference_interval[LLC_SET][LLC_WAY];
+int  mj_ReReference_pred_saved[LLC_SET][LLC_WAY];
+bool mj_is_reference[LLC_SET];
+int  mj_num_hits[LLC_SET][LLC_WAY];
+int  mj_my_timer;
+
+// MJ static helpers
+static int mj_geometric_mean(int x, int n) {
+    if (x <= 0) return 0;
+    double geo_mean = 0;
+    for (int i = 1; i <= n - 1; i++) geo_mean += sd_log2(x + i);
+    geo_mean = geo_mean / (n - 1);
+    double prediction = x;
+    for (int i = 1; i < n; i++)
+        prediction = prediction * (double)(x + i) / (double)(x) * pow(2, geo_mean) / (1 << (26 + sd_log2(x + i) + sd_log2(n) + 2));
+    return (int)prediction;
+}
+
+static int mj_normalize_to_2p7(int x) {
+    int result = x;
+    while (result > 127) result /= 2;
+    while (result < 64) result *= 2;
+    return result;
+}
+
+static int mj_medium_filter(int reference) {
+    for (int i = 1; i <= 4; i++) {
+        reference = (reference * (MJ_HISTORY + i)) / i;
+    }
+    for (int i = 0; i < 4; i++) {
+        reference = (reference * 2) / 3;
+    }
+    return reference;
+}
+
+static int mj_add_half_of_geometric_mean_plus = 0;
+static int mj_add_half_of_geometric_mean(int reference) {
+    mj_add_half_of_geometric_mean_plus = reference / 2;
+    return reference;
+}
+
+static int mj_signature(uint64_t PC, int set) {
+    return ((PC % 2 == 0) ? PC : ((PC >> 2) * set)) % (LLC_WAY * MJ_HISTORY);
+}
+
+static int mj_ReRef_to_RD(int RD, int reference) {
+    int normalized_ref = mj_normalize_to_2p7(reference);
+    int geo_mean_RD = mj_geometric_mean(RD, MJ_HISTORY);
+    int geo_mean_ref = mj_geometric_mean(normalized_ref, MJ_HISTORY);
+    return (RD + geo_mean_RD + geo_mean_ref);
+}
+
+static int mj_get_RD(int set, int way) {
+    if (mj_ReReference_pred_saved[set][way] < 1000)
+        return 0;
+    int reference = mj_ReReference_interval[set][way];
+    if (reference == 0) return 0;
+    int RD = mj_num_hits[set][way];
+    mj_add_half_of_geometric_mean(reference);
+    reference = mj_medium_filter(reference);
+    int guess_RD = mj_ReRef_to_RD(RD, reference);
+    if (guess_RD > MJ_MAX_RD) guess_RD = MJ_MAX_RD;
+    return guess_RD;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Hawkeye State & Logic (policy index 1)
+// ══════════════════════════════════════════════════════════════
+#define HK_maxRRPV     7
+#define HK_MAX_SHCT    31
+#define HK_SHCT_SIZE_BITS 11
+#define HK_SHCT_SIZE   (1 << HK_SHCT_SIZE_BITS)
+#define HK_OPTGEN_VECTOR_SIZE 128
+#define HK_TIMER_SIZE  1024
+#define HK_SAMPLED_CACHE_SIZE 2800
+#define HK_SAMPLER_WAYS 8
+#define HK_SAMPLER_SETS (HK_SAMPLED_CACHE_SIZE / HK_SAMPLER_WAYS)
+
+uint32_t hk_rrpv[LLC_SET][LLC_WAY];
+uint64_t hk_perset_mytimer[LLC_SET];
+uint64_t hk_signatures[LLC_SET][LLC_WAY];
+bool     hk_prefetched[LLC_SET][LLC_WAY];
+
+struct HK_OPTgen {
+    std::vector<unsigned int> liveness_history;
+    uint64_t num_cache, num_dont_cache, access, CACHE_SIZE;
+    void init(uint64_t size) {
+        num_cache = num_dont_cache = access = 0;
+        CACHE_SIZE = size;
+        liveness_history.resize(HK_OPTGEN_VECTOR_SIZE, 0);
+    }
+    void add_access(uint64_t curr_quanta) { access++; liveness_history[curr_quanta] = 0; }
+    void add_prefetch(uint64_t curr_quanta) { liveness_history[curr_quanta] = 0; }
+    bool should_cache(uint64_t curr_quanta, uint64_t last_quanta) {
+        bool is_cache = true;
+        unsigned int i = last_quanta;
+        while (i != curr_quanta) {
+            if (liveness_history[i] >= CACHE_SIZE) { is_cache = false; break; }
+            i = (i + 1) % liveness_history.size();
+        }
+        if (is_cache) {
+            i = last_quanta;
+            while (i != curr_quanta) { liveness_history[i]++; i = (i + 1) % liveness_history.size(); }
+        }
+        if (is_cache) num_cache++; else num_dont_cache++;
+        return is_cache;
+    }
+    uint64_t get_num_opt_hits() { return num_cache; }
+};
+HK_OPTgen hk_perset_optgen[LLC_SET];
+
+struct HK_ADDR_INFO {
+    uint64_t addr, PC;
+    uint32_t last_quanta, lru;
+    bool prefetched;
+    void init(unsigned int) { last_quanta = 0; PC = 0; prefetched = false; lru = 0; }
+    void update(unsigned int curr_quanta, uint64_t _pc, bool) { last_quanta = curr_quanta; PC = _pc; }
+    void mark_prefetch() { prefetched = true; }
+};
+std::vector<std::map<uint64_t, HK_ADDR_INFO>> hk_addr_history;
+
+static uint64_t hk_crc(uint64_t _blockAddress) {
+    static const unsigned long long crcPolynomial = 3988292384ULL;
+    unsigned long long _returnVal = _blockAddress;
+    for (unsigned int i = 0; i < 32; i++)
+        _returnVal = ((_returnVal & 1) == 1) ? ((_returnVal >> 1) ^ crcPolynomial) : (_returnVal >> 1);
+    return _returnVal;
+}
+
+class HK_PC_PREDICTOR {
+    std::map<uint64_t, short unsigned int> SHCT;
+public:
+    void increment(uint64_t pc) {
+        uint64_t signature = hk_crc(pc) % HK_SHCT_SIZE;
+        if (SHCT.find(signature) == SHCT.end()) SHCT[signature] = (1 + HK_MAX_SHCT) / 2;
+        SHCT[signature] = (SHCT[signature] < HK_MAX_SHCT) ? (SHCT[signature] + 1) : HK_MAX_SHCT;
+    }
+    void decrement(uint64_t pc) {
+        uint64_t signature = hk_crc(pc) % HK_SHCT_SIZE;
+        if (SHCT.find(signature) == SHCT.end()) SHCT[signature] = (1 + HK_MAX_SHCT) / 2;
+        if (SHCT[signature] != 0) SHCT[signature] = SHCT[signature] - 1;
+    }
+    bool get_prediction(uint64_t pc) {
+        uint64_t signature = hk_crc(pc) % HK_SHCT_SIZE;
+        if (SHCT.find(signature) != SHCT.end() && SHCT[signature] < ((HK_MAX_SHCT + 1) / 2)) return false;
+        return true;
+    }
+};
+HK_PC_PREDICTOR *hk_demand_predictor;
+HK_PC_PREDICTOR *hk_prefetch_predictor;
+
+static bool hk_sampled_set(uint32_t set) {
+    constexpr int upper_shift = sd_log2(LLC_SET) - 6;
+    return ((set & 0x3F) == ((set >> (unsigned)upper_shift) & 0x3F));
+}
+
+static void hk_replace_addr_history_element(unsigned int sampler_set) {
+    uint64_t lru_addr = 0;
+    for (auto &kv : hk_addr_history[sampler_set]) {
+        if (kv.second.lru == (HK_SAMPLER_WAYS - 1)) { lru_addr = kv.first; break; }
+    }
+    hk_addr_history[sampler_set].erase(lru_addr);
+}
+
+static void hk_update_addr_history_lru(unsigned int sampler_set, unsigned int curr_lru) {
+    for (auto &kv : hk_addr_history[sampler_set]) {
+        if (kv.second.lru < curr_lru) kv.second.lru++;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Dispatch helpers
+// ══════════════════════════════════════════════════════════════
+static int sd_get_leader(uint32_t set) { return sd_leader_policy[set]; }
+static int sd_get_best(uint32_t cpu) { return (sd_psel[cpu] > SD_PSEL_MID) ? 1 : 0; }
+
+// ── Mockingjay victim ──
+static uint32_t mj_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                const BLOCK *current_set, uint64_t ip, uint64_t full_addr) {
+    (void)cpu; (void)instr_id; (void)ip; (void)full_addr;
+    for (int i = 0; i < LLC_WAY; i++)
+        if (current_set[i].valid == false) return i;
+    int min_etr_idx = 0;
+    int min_etr = mj_etr[set][0];
+    for (int i = 1; i < LLC_WAY; i++) {
+        if (mj_etr[set][i] < min_etr) { min_etr = mj_etr[set][i]; min_etr_idx = i; }
+    }
+    return min_etr_idx;
+}
+
+// ── Hawkeye victim ──
+static uint32_t hk_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                const BLOCK *current_set, uint64_t ip, uint64_t full_addr,
+                                uint32_t type) {
+    (void)cpu; (void)instr_id; (void)ip; (void)full_addr; (void)type;
+    for (uint32_t way = 0; way < (uint32_t)LLC_WAY; way++)
+        if (current_set[way].valid == false) return way;
+    for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++)
+        if (hk_rrpv[set][i] == HK_maxRRPV) return i;
+    uint32_t max_rrip = 0;
+    int32_t lru_victim = -1;
+    for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++) {
+        if (hk_rrpv[set][i] >= max_rrip) { max_rrip = hk_rrpv[set][i]; lru_victim = i; }
+    }
+    if (hk_sampled_set(set) && lru_victim >= 0) {
+        if (hk_prefetched[set][lru_victim])
+            hk_prefetch_predictor->decrement(hk_signatures[set][lru_victim]);
+        else
+            hk_demand_predictor->decrement(hk_signatures[set][lru_victim]);
+    }
+    return (uint32_t)lru_victim;
+}
+
+// ── MJ update ──
+static void mj_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr,
+                       uint64_t ip, uint32_t type, bool hit) {
+    if (type == WRITEBACK) return;
+    full_addr = (full_addr >> 6) << 6;
+    if (!mj_is_leader_set[set] && mj_ReReference_pred_saved[set][way] < 1000) return;
+    if (hit) {
+        mj_ReReference_pred_saved[set][way] = 0;
+        int rd = mj_get_RD(set, way);
+        mj_num_hits[set][way]++;
+        mj_is_reference[set] = true;
+        mj_etr[set][way] = rd;
+        mj_etr_clock[set] = 0;
+    } else {
+        if (mj_is_leader_set[set]) {
+            mj_ReReference_pred_saved[set][way] = mj_ReReference_interval[set][way];
+            mj_ReReference_interval[set][way] = 0;
+        }
+        mj_etr[set][way] = MJ_INF_ETR;
+    }
+    for (int i = 0; i < LLC_WAY; i++) {
+        mj_ReReference_interval[set][i]++;
+        if (mj_ReReference_interval[set][i] > 1000000) mj_ReReference_interval[set][i] = 1000000;
+    }
+    mj_etr_clock[set]++;
+    if (mj_etr_clock[set] % MJ_GRANULARITY == 0) {
+        for (int i = 0; i < LLC_WAY; i++)
+            if (mj_etr[set][i] < MJ_INF_ETR) mj_etr[set][i]++;
+    }
+    if (!hit && mj_is_leader_set[set]) {
+        mj_num_eviction[set][way]++;
+        int rd = mj_get_RD(set, way);
+        for (int i = 0; i < MJ_HISTORY; i++)
+            mj_ReReference_pred[set][way][i] = (i == 0) ? rd : mj_ReReference_pred[set][way][i - 1];
+        mj_num_eviction[set][way] = 0;
+    }
+}
+
+// ── HK update ──
+static void hk_update(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr,
+                       uint64_t ip, uint64_t victim_addr, uint32_t type, bool hit) {
+    full_addr = (full_addr >> 6) << 6;
+    if (type == PREFETCH) {
+        if (!hit) hk_prefetched[set][way] = true;
+    } else {
+        hk_prefetched[set][way] = false;
+    }
+    if (type == WRITEBACK) return;
+
+    if (hk_sampled_set(set)) {
+        uint64_t curr_quanta = hk_perset_mytimer[set] % HK_OPTGEN_VECTOR_SIZE;
+        uint32_t sampler_set = (full_addr >> 6) % HK_SAMPLER_SETS;
+        uint64_t sampler_tag = hk_crc(full_addr >> 12) % 256;
+        if (hk_addr_history[sampler_set].find(sampler_tag) != hk_addr_history[sampler_set].end() && type != PREFETCH) {
+            unsigned int curr_timer = hk_perset_mytimer[set];
+            if (curr_timer < hk_addr_history[sampler_set][sampler_tag].last_quanta)
+                curr_timer = curr_timer + HK_TIMER_SIZE;
+            bool wrap = ((curr_timer - hk_addr_history[sampler_set][sampler_tag].last_quanta) > HK_OPTGEN_VECTOR_SIZE);
+            uint64_t last_quanta = hk_addr_history[sampler_set][sampler_tag].last_quanta % HK_OPTGEN_VECTOR_SIZE;
+            if (!wrap && hk_perset_optgen[set].should_cache(curr_quanta, last_quanta)) {
+                if (hk_addr_history[sampler_set][sampler_tag].prefetched)
+                    hk_prefetch_predictor->increment(hk_addr_history[sampler_set][sampler_tag].PC);
+                else
+                    hk_demand_predictor->increment(hk_addr_history[sampler_set][sampler_tag].PC);
+            } else {
+                if (hk_addr_history[sampler_set][sampler_tag].prefetched)
+                    hk_prefetch_predictor->decrement(hk_addr_history[sampler_set][sampler_tag].PC);
+                else
+                    hk_demand_predictor->decrement(hk_addr_history[sampler_set][sampler_tag].PC);
+            }
+            hk_perset_optgen[set].add_access(curr_quanta);
+            hk_update_addr_history_lru(sampler_set, hk_addr_history[sampler_set][sampler_tag].lru);
+            hk_addr_history[sampler_set][sampler_tag].prefetched = false;
+        } else if (hk_addr_history[sampler_set].find(sampler_tag) == hk_addr_history[sampler_set].end()) {
+            if ((int)hk_addr_history[sampler_set].size() == HK_SAMPLER_WAYS)
+                hk_replace_addr_history_element(sampler_set);
+            hk_addr_history[sampler_set][sampler_tag].init(curr_quanta);
+            if (type == PREFETCH) {
+                hk_addr_history[sampler_set][sampler_tag].mark_prefetch();
+                hk_perset_optgen[set].add_prefetch(curr_quanta);
+            } else {
+                hk_perset_optgen[set].add_access(curr_quanta);
+            }
+            hk_update_addr_history_lru(sampler_set, HK_SAMPLER_WAYS - 1);
+        } else {
+            uint64_t last_quanta = hk_addr_history[sampler_set][sampler_tag].last_quanta % HK_OPTGEN_VECTOR_SIZE;
+            if (hk_perset_mytimer[set] - hk_addr_history[sampler_set][sampler_tag].last_quanta < 5 * NUM_CPUS) {
+                if (hk_perset_optgen[set].should_cache(curr_quanta, last_quanta)) {
+                    if (hk_addr_history[sampler_set][sampler_tag].prefetched)
+                        hk_prefetch_predictor->increment(hk_addr_history[sampler_set][sampler_tag].PC);
+                    else
+                        hk_demand_predictor->increment(hk_addr_history[sampler_set][sampler_tag].PC);
+                }
+            }
+            hk_addr_history[sampler_set][sampler_tag].mark_prefetch();
+            hk_perset_optgen[set].add_prefetch(curr_quanta);
+            hk_update_addr_history_lru(sampler_set, hk_addr_history[sampler_set][sampler_tag].lru);
+        }
+        bool new_prediction = hk_demand_predictor->get_prediction(ip);
+        if (type == PREFETCH) new_prediction = hk_prefetch_predictor->get_prediction(ip);
+        hk_addr_history[sampler_set][sampler_tag].update(hk_perset_mytimer[set], ip, new_prediction);
+        hk_addr_history[sampler_set][sampler_tag].lru = 0;
+        hk_perset_mytimer[set] = (hk_perset_mytimer[set] + 1) % HK_TIMER_SIZE;
+    }
+
+    bool new_prediction = hk_demand_predictor->get_prediction(ip);
+    if (type == PREFETCH) new_prediction = hk_prefetch_predictor->get_prediction(ip);
+    hk_signatures[set][way] = ip;
+    if (!new_prediction) {
+        hk_rrpv[set][way] = HK_maxRRPV;
+    } else {
+        hk_rrpv[set][way] = 0;
+        if (!hit) {
+            bool saturated = false;
+            for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++)
+                if (hk_rrpv[set][i] == HK_maxRRPV - 1) saturated = true;
+            for (uint32_t i = 0; i < (uint32_t)LLC_WAY; i++)
+                if (!saturated && hk_rrpv[set][i] < HK_maxRRPV - 1) hk_rrpv[set][i]++;
+        }
+        hk_rrpv[set][way] = 0;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// CACHE member functions
+// ══════════════════════════════════════════════════════════════
+
+void CACHE::llc_initialize_replacement()
+{
+    cout << "Initialize Set Dueling (Mockingjay vs Hawkeye) state" << endl;
+
+    // Init MJ state
+    for (int i = 0; i < LLC_SET; i++) {
+        for (int j = 0; j < LLC_WAY; j++) {
+            mj_etr[i][j] = MJ_INF_ETR;
+            mj_num_eviction[i][j] = 0;
+            for (int k = 0; k < MJ_HISTORY; k++) mj_ReReference_pred[i][j][k] = 0;
+            mj_ReReference_interval[i][j] = 0;
+            mj_ReReference_pred_saved[i][j] = 1000;
+            mj_num_hits[i][j] = 0;
+        }
+        mj_etr_clock[i] = 0;
+        mj_is_leader_set[i] = false;
+        mj_is_reference[i] = false;
+    }
+    mj_my_timer = 0;
+
+    // Init HK state
+    for (int i = 0; i < LLC_SET; i++) {
+        for (int j = 0; j < LLC_WAY; j++) {
+            hk_rrpv[i][j] = HK_maxRRPV;
+            hk_signatures[i][j] = 0;
+            hk_prefetched[i][j] = false;
+        }
+        hk_perset_mytimer[i] = 0;
+        hk_perset_optgen[i].init(LLC_WAY - 2);
+    }
+    hk_addr_history.resize(HK_SAMPLER_SETS);
+    hk_demand_predictor = new HK_PC_PREDICTOR();
+    hk_prefetch_predictor = new HK_PC_PREDICTOR();
+
+    // Init SDM
+    for (int i = 0; i < LLC_SET; i++) sd_leader_policy[i] = -1;
+
+    srand(time(NULL));
+    unsigned long rand_seed = 1;
+    unsigned long max_rand = 1048576;
+    uint32_t total_sdm = 2 * SD_SDM_SIZE;
+    uint32_t *chosen = (uint32_t *)malloc(total_sdm * sizeof(uint32_t));
+    for (uint32_t i = 0; i < total_sdm; i++) {
+        int dup;
+        do {
+            dup = 0;
+            rand_seed = rand_seed * 1103515245 + 12345;
+            chosen[i] = ((unsigned)((rand_seed / 65536) % max_rand)) % (LLC_SET);
+            for (uint32_t j = 0; j < i; j++)
+                if (chosen[i] == chosen[j]) { dup = 1; break; }
+        } while (dup);
+    }
+    for (uint32_t i = 0; i < SD_SDM_SIZE; i++) {
+        sd_leader_policy[chosen[i]] = 0;
+        mj_is_leader_set[chosen[i]] = true;
+    }
+    for (uint32_t i = 0; i < SD_SDM_SIZE; i++)
+        sd_leader_policy[chosen[SD_SDM_SIZE + i]] = 1;
+    free(chosen);
+
+    for (int i = 0; i < NUM_CPUS; i++) sd_psel[i] = SD_PSEL_MID;
+}
+
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                 const BLOCK *current_set, uint64_t ip,
+                                 uint64_t full_addr, uint32_t type)
+{
+    int leader = sd_get_leader(set);
+    if (leader == 0)
+        return mj_find_victim(cpu, instr_id, set, current_set, ip, full_addr);
+    else if (leader == 1)
+        return hk_find_victim(cpu, instr_id, set, current_set, ip, full_addr, type);
+    else {
+        int best = sd_get_best(cpu);
+        if (best == 0) return mj_find_victim(cpu, instr_id, set, current_set, ip, full_addr);
+        else           return hk_find_victim(cpu, instr_id, set, current_set, ip, full_addr, type);
+    }
+}
+
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way,
+                                          uint64_t full_addr, uint64_t ip,
+                                          uint64_t victim_addr, uint32_t type,
+                                          uint8_t hit)
+{
+    if (type == WRITEBACK) {
+        mj_update(cpu, set, way, full_addr, ip, type, hit);
+        hk_update(cpu, set, way, full_addr, ip, victim_addr, type, hit);
+        return;
+    }
+
+    int leader = sd_get_leader(set);
+
+    if (hit) {
+        if (leader >= 0) {
+            if (leader == 0) mj_update(cpu, set, way, full_addr, ip, type, true);
+            else             hk_update(cpu, set, way, full_addr, ip, victim_addr, type, true);
+        } else {
+            mj_update(cpu, set, way, full_addr, ip, type, true);
+            hk_update(cpu, set, way, full_addr, ip, victim_addr, type, true);
+        }
+    } else {
+        mj_update(cpu, set, way, full_addr, ip, type, false);
+        hk_update(cpu, set, way, full_addr, ip, victim_addr, type, false);
+
+        if (leader == 0) { if (sd_psel[cpu] < SD_PSEL_MAX) sd_psel[cpu]++; }
+        else if (leader == 1) { if (sd_psel[cpu] > 0) sd_psel[cpu]--; }
+    }
+}
+
+void CACHE::llc_replacement_final_stats()
+{
+    unsigned int hk_hits = 0, hk_accesses = 0;
+    for (int i = 0; i < LLC_SET; i++) {
+        hk_accesses += hk_perset_optgen[i].access;
+        hk_hits += hk_perset_optgen[i].get_num_opt_hits();
+    }
+    cout << "Set Dueling (Mockingjay vs Hawkeye) PSEL: " << sd_psel[0] << endl;
+    cout << "  Best: " << (sd_get_best(0) == 0 ? "Mockingjay" : "Hawkeye") << endl;
+    cout << "  Hawkeye OPTgen accesses: " << hk_accesses << " hits: " << hk_hits;
+    if (hk_accesses > 0) cout << " hit rate: " << 100.0 * hk_hits / hk_accesses << "%";
+    cout << endl;
+}
