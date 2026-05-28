@@ -6,6 +6,8 @@
 #include <ctime>
 #include <algorithm>
 
+#define SD_PSEL_LOG_INTERVAL 500000   // PSEL log every ~500K LLC accesses
+
 // ── SDM Constants ──
 #define SD_SDM_SIZE  32
 #define SD_PSEL_WIDTH 10
@@ -181,6 +183,16 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
             // SRRIP leader miss → shift toward LRU
             if (sd_psel[cpu] > 0) sd_psel[cpu]--;
         }
+    }
+
+    { static uint64_t sd_psel_log_cnt = 0;
+      sd_psel_log_cnt++;
+      if (sd_psel_log_cnt % SD_PSEL_LOG_INTERVAL == 0) {
+        printf("PSEL_LOG [%lu] PSEL=%u best=%s leader=%d\n",
+               sd_psel_log_cnt, sd_psel[cpu],
+               (sd_psel[cpu] > SD_PSEL_MID) ? "SRRIP" : "LRU",
+               leader);
+      }
     }
 }
 

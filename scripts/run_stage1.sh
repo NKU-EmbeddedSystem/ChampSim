@@ -476,6 +476,12 @@ ln -sfn "$TIMESTAMP" "$RUNS_DIR/latest"
 ln -sfn "../../runs/stage1/latest/main.log" "$PLANS_DIR/SUMMARY.log"
 ln -sfn "../../../scripts/run_stage1.sh" "$PLANS_DIR/run_stage1.sh"
 
+# Step 8: Run set-dueling verification (appends to CONCLUSIONS.md)
+log_main ""
+log_main "── Running set-dueling verifications ──────────────────"
+bash "$ROOT_DIR/scripts/verify_set_dueling.sh" "$RUN_DIR" --conclusions "$PLANS_DIR/CONCLUSIONS.md" \
+    >> "$RUN_DIR/main.log" 2>&1
+
 log_main ""
 log_main "══════════════════════════════════════════════════════════"
 log_main "  Finished: $(date '+%Y-%m-%d %H:%M:%S')"

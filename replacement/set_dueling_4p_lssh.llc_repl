@@ -1,6 +1,7 @@
 // set_dueling_4p_lssh.llc_repl
 // 4-policy Set Dueling: LRU + SRRIP + SHIP + Hawkeye
 // Self-contained for previous-branch build system (build_champsim.sh)
+#define SD_PSEL_LOG_INTERVAL 500000   // PSEL log every ~500K LLC accesses
 #include "cache.h"
 #include <cstdlib>
 #include <ctime>
@@ -348,6 +349,14 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     int leader = sd_get_leader(set);
     if (!hit && leader >= 0 && sd_psel[cpu][leader] > 0)
         sd_psel[cpu][leader]--;
+    { static uint64_t sd_psel_log_cnt = 0;
+      sd_psel_log_cnt++;
+      if (sd_psel_log_cnt % SD_PSEL_LOG_INTERVAL == 0) {
+        printf("PSEL_LOG [%lu] PSEL=[%u %u %u %u] best=%d leader=%d\n", sd_psel_log_cnt,
+               sd_psel[cpu][0], sd_psel[cpu][1], sd_psel[cpu][2], sd_psel[cpu][3],
+               sd_get_best(cpu), leader);
+      }
+    }
 }
 
 void CACHE::llc_replacement_final_stats()

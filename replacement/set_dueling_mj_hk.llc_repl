@@ -1,6 +1,7 @@
 // set_dueling_mj_hk.llc_repl
 // 2-policy Set Dueling: Mockingjay vs Hawkeye
 // Self-contained for previous-branch build system (build_champsim.sh)
+#define SD_PSEL_LOG_INTERVAL 500000   // PSEL log every ~500K LLC accesses
 #include "cache.h"
 #include <cstdlib>
 #include <ctime>
@@ -483,6 +484,11 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
         if (leader == 0) { if (sd_psel[cpu] < SD_PSEL_MAX) sd_psel[cpu]++; }
         else if (leader == 1) { if (sd_psel[cpu] > 0) sd_psel[cpu]--; }
     }
+    { static uint64_t sd_psel_log_cnt = 0;
+      sd_psel_log_cnt++;
+      if (sd_psel_log_cnt % SD_PSEL_LOG_INTERVAL == 0)
+        printf("PSEL_LOG [%lu] PSEL=%u best=%s leader=%d\n", sd_psel_log_cnt, sd_psel[cpu],
+               (sd_psel[cpu] > SD_PSEL_MID) ? "Hawkeye" : "Mockingjay", leader); }
 }
 
 void CACHE::llc_replacement_final_stats()
