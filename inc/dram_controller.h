@@ -9,9 +9,9 @@
 #define DRAM_WQ_SIZE 64
 #define DRAM_RQ_SIZE 64
 
-#define tRP_DRAM_NANOSECONDS  12.5
-#define tRCD_DRAM_NANOSECONDS 12.5
-#define tCAS_DRAM_NANOSECONDS 12.5
+#define tRP_DRAM_NANOSECONDS  6.0   // matched to latest: 24 cycles @ 4GHz
+#define tRCD_DRAM_NANOSECONDS 6.0   // matched to latest: 24 cycles @ 4GHz
+#define tCAS_DRAM_NANOSECONDS 6.0   // matched to latest: 24 cycles @ 4GHz
 
 // the data bus must wait this amount of time when switching between reads and writes, and vice versa
 #define DRAM_DBUS_TURN_AROUND_TIME ((15*CPU_FREQ)/2000) // 7.5 ns 

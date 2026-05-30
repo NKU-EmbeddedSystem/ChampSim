@@ -61,11 +61,11 @@
 #define LOG2_DRAM_CHANNELS 0
 #define DRAM_RANKS 1         // 512MB * 8 ranks => 4GB per DIMM
 #define LOG2_DRAM_RANKS 0
-#define DRAM_BANKS 8         // 64MB * 8 banks => 512MB per rank
-#define LOG2_DRAM_BANKS 3
+#define DRAM_BANKS 32        // matched to latest: 8 bankgroups x 4 banks
+#define LOG2_DRAM_BANKS 5
 #define DRAM_ROWS 65536      // 2KB * 32K rows => 64MB per bank
 #define LOG2_DRAM_ROWS 16
-#define DRAM_COLUMNS 128      // 64B * 32 column chunks (Assuming 1B DRAM cell * 8 chips * 8 transactions = 64B size of column chunks) => 2KB per row
+#define DRAM_COLUMNS 128      // 64B * 128 => 8KB per row (matches latest 1024 cols x 8B = 8KB)
 #define LOG2_DRAM_COLUMNS 7
 #define DRAM_ROW_SIZE (BLOCK_SIZE*DRAM_COLUMNS/1024)
 
