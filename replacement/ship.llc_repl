@@ -279,5 +279,26 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
 // use this function to print out your own stats at the end of simulation
 void CACHE::llc_replacement_final_stats()
 {
+    cout << endl;
+    cout << "===========================================================" << endl;
+    cout << "              LLC Misses by Memory Area (SHIP)         " << endl;
+    cout << "===========================================================" << endl;
+    
+    // 直接使用 llc_miss_by_area，因为它属于当前的 CACHE 对象
+    cout << "Local DRAM (Area 0) Misses : " << llc_miss_by_area[0] << endl;
+    cout << "NUMA Node  (Area 1) Misses : " << llc_miss_by_area[1] << endl;
+    cout << "CXL Node   (Area 2) Misses : " << llc_miss_by_area[2] << endl;
+    
+    uint64_t total_custom_misses = llc_miss_by_area[0] + llc_miss_by_area[1] + llc_miss_by_area[2];
+                                   
+    cout << "-----------------------------------------------------------" << endl;
+    cout << "Total Tracked Area Misses  : " << total_custom_misses << endl;
 
+    uint64_t total_custom_miss_times = llc_miss_by_area[0] * 100 + (llc_miss_by_area[1] + llc_miss_by_area[2]) * 300;
+
+    cout << "-----------------------------------------------------------" << endl;
+    cout << "Total Tracked Area Miss Times  : " << total_custom_miss_times << endl;
+
+    cout << "===========================================================" << endl;
+    cout << endl;
 }

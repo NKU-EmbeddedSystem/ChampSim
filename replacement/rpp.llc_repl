@@ -1,0 +1,809 @@
+// RPP (Reuse Prediction-based Policy) Cache Replacement v2
+// Features: Global Victim Cache (GVC), multi-modal RDP, context-aware ETR
+// Ported from backend-aware-cache (rpp_helper.h/cpp + mockingjay_helper.h/cpp)
+//
+// Key improvements over MockingJay:
+//  - GVC saves evicted local-area blocks; reuse hits boost PC priority
+//  - rpp_rdp stores {rdp_value, reuse_count} pairs
+//  - rpp_rdp_multi: multi-modal RDP via linked-list clusters
+//  - etr_initial_context: context-adaptive ETR initialization
+//  - rpp_get_pc_signature includes area info in hash
+
+#include "cache.h"
+#include "memory_mapper.h"
+#include "ooo_cpu.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <iomanip>
+#include <iostream>
+#include <stdlib.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
+using namespace std;
+
+// ==================== Constants (from rpp_helper.h + mockingjay_helper.h) ====================
+constexpr int LOG2_LLC_SET = log2(LLC_SET);
+constexpr int LOG2_LLC_SIZE = LOG2_LLC_SET + log2(LLC_WAY) + LOG2_BLOCK_SIZE;
+constexpr int LOG2_SAMPLED_SETS = LOG2_LLC_SIZE - 16;
+
+constexpr int rpp_HISTORY = 8;
+constexpr int rpp_GRANULARITY = 8;
+
+constexpr int rpp_INF_RD = LLC_WAY * rpp_HISTORY - 1;            // e.g. 12*8-1 = 95
+constexpr int rpp_victim_INF_RD = rpp_INF_RD;                     // same for GVC
+constexpr int rpp_INF_ETR = (LLC_WAY * rpp_HISTORY * 6 / rpp_GRANULARITY) - 1;  // 12*8*6/8-1 = 71
+constexpr int rpp_MAX_RD = rpp_INF_RD - 22;                       // 95-22 = 73
+constexpr int rpp_TIMESTAMP_BITS = 8;
+constexpr double rpp_TEMP_DIFFERENCE = 1.0 / 16.0;
+
+// Sampled cache config
+constexpr int SAMPLED_CACHE_WAYS = 5;
+constexpr int LOG2_SAMPLED_CACHE_SETS = 4;
+constexpr int SAMPLED_CACHE_TAG_BITS = 31 - LOG2_LLC_SIZE;
+constexpr int PC_SIGNATURE_BITS = LOG2_LLC_SIZE - 10;
+
+// Global Victim Cache
+constexpr int RPP_GVC_CAP = 512;
+
+constexpr int rpp_CONTEXT = 8;  // default context parameter
+
+// ==================== Data Structures ====================
+
+struct RDP_Entry {
+    int value;
+    float counts;
+    RDP_Entry *next;
+    RDP_Entry(int v, float c) : value(v), counts(c), next(nullptr) {}
+};
+
+struct SampledCacheLine {
+    bool valid;
+    uint64_t tag;
+    uint64_t signature;
+    int timestamp;
+};
+
+struct RPP_GVC_Entry {
+    uint64_t tag;
+    uint64_t last_pc_sig;
+    uint64_t insert_ts;
+    bool valid;
+};
+
+// ==================== Global State ====================
+
+// Sampled cache
+static unordered_map<uint32_t, SampledCacheLine*> rpp_sampled_cache;
+
+// ETR table
+static int rpp_etr[LLC_SET][LLC_WAY];
+static int rpp_etr_history[LLC_SET][LLC_WAY];
+
+// ETR clock
+static int rpp_etr_clock[LLC_SET];
+
+// RDP: PC signature -> {rdp_value, reuse_count}
+static unordered_map<uint32_t, pair<int, int>> rpp_rdp;
+
+// Multi-modal RDP
+static unordered_map<uint32_t, pair<int, RDP_Entry*>> rpp_rdp_multi;
+
+// Variance tracking
+static unordered_map<uint32_t, float> rpp_rdp_var;
+
+// Per-set timestamp
+static int rpp_current_timestamp[LLC_SET];
+
+// Global Victim Cache
+static vector<RPP_GVC_Entry> rpp_gvc;
+
+// GVC statistics
+static unordered_map<uint64_t, int> rpp_gvc_pc;
+static unordered_map<uint64_t, int> rpp_gvc_set;
+static unordered_map<uint64_t, int> rpp_gvc_pc_hit;
+static unordered_map<uint64_t, int> rpp_gvc_set_hit;
+
+// ==================== GVC Helpers ====================
+
+static inline void rpp_gvc_reset() {
+    rpp_gvc.clear();
+    rpp_gvc.reserve(RPP_GVC_CAP);
+}
+
+static inline int rpp_gvc_find(uint64_t tag) {
+    for (size_t i = 0; i < rpp_gvc.size(); ++i)
+        if (rpp_gvc[i].valid && rpp_gvc[i].tag == tag)
+            return (int)i;
+    return -1;
+}
+
+static inline void rpp_gvc_erase_index(size_t idx) {
+    if (idx >= rpp_gvc.size()) return;
+    rpp_gvc.erase(rpp_gvc.begin() + idx);
+}
+
+static inline void rpp_gvc_push_fifo(uint64_t tag, uint64_t last_pc_sig,
+                                      uint64_t insert_ts) {
+    int old = rpp_gvc_find(tag);
+    if (old >= 0) rpp_gvc_erase_index((size_t)old);
+    if (rpp_gvc.size() >= (size_t)RPP_GVC_CAP)
+        rpp_gvc.erase(rpp_gvc.begin());
+    rpp_gvc.push_back(RPP_GVC_Entry{tag, last_pc_sig, insert_ts, true});
+}
+
+static inline void rpp_gvc_pc_push(uint64_t last_pc_sig) {
+    rpp_gvc_pc[last_pc_sig]++;
+}
+
+static inline void rpp_gvc_set_push(uint64_t set) {
+    rpp_gvc_set[set]++;
+}
+
+static inline void rpp_gvc_purge_by_pc_and_tag(uint64_t pc_sig, uint64_t tag) {
+    for (int i = (int)rpp_gvc.size() - 1; i >= 0; --i) {
+        auto &entry = rpp_gvc[(size_t)i];
+        if (entry.valid && entry.last_pc_sig == pc_sig && entry.tag == tag) {
+            rpp_gvc.erase(rpp_gvc.begin() + i);
+        }
+    }
+}
+
+// ==================== Core Helpers ====================
+
+uint64_t CRC_HASH(uint64_t _blockAddress) {
+    static const unsigned long long crcPolynomial = 3988292384ULL;
+    unsigned long long _returnVal = _blockAddress;
+    for (unsigned int i = 0; i < 3; i++)
+        _returnVal = ((_returnVal & 1) == 1) ? ((_returnVal >> 1) ^ crcPolynomial)
+                                             : (_returnVal >> 1);
+    return _returnVal;
+}
+
+// PC signature WITHOUT area (used internally in rpp_update/rpp_find_victim,
+// matching mockingjay_helper.cpp's get_pc_signature)
+uint64_t get_pc_signature(uint64_t pc, bool hit, bool prefetch, uint32_t core) {
+    if (NUM_CPUS == 1) {
+        (void)hit;  // hit bit no longer encoded in current backend
+        pc = pc << 1;
+        if (prefetch) pc = pc | 1;
+        pc = CRC_HASH(pc);
+        pc = (pc << (64 - PC_SIGNATURE_BITS)) >> (64 - PC_SIGNATURE_BITS);
+    } else {
+        pc = pc << 1;
+        if (prefetch) pc = pc | 1;
+        pc = pc << 2;
+        pc = pc | core;
+        pc = CRC_HASH(pc);
+        pc = (pc << (64 - PC_SIGNATURE_BITS)) >> (64 - PC_SIGNATURE_BITS);
+    }
+    return pc;
+}
+
+// PC signature WITH area (rpp_get_pc_signature from backend)
+uint64_t rpp_get_pc_signature(uint64_t pc, bool hit, bool prefetch,
+                               uint32_t core, uint32_t area) {
+    if (NUM_CPUS == 1) {
+        pc = pc << 1;
+        if (hit) pc = pc | 1;
+        pc = pc << 1;
+        if (prefetch) pc = pc | 1;
+        pc = pc << 2;
+        pc = pc | area;
+        pc = CRC_HASH(pc);
+        pc = (pc << (64 - PC_SIGNATURE_BITS)) >> (64 - PC_SIGNATURE_BITS);
+    } else {
+        pc = pc << 1;
+        if (prefetch) pc = pc | 1;
+        pc = pc << 2;
+        pc = pc | core;
+        pc = pc << 2;
+        pc = pc | area;
+        pc = CRC_HASH(pc);
+        pc = (pc << (64 - PC_SIGNATURE_BITS)) >> (64 - PC_SIGNATURE_BITS);
+    }
+    return pc;
+}
+
+bool is_sampled_set(int set) {
+    int mask_length = LOG2_LLC_SET - LOG2_SAMPLED_SETS;
+    int mask = (1 << mask_length) - 1;
+    return (set & mask) == ((set >> (LOG2_LLC_SET - mask_length)) & mask);
+}
+
+uint32_t get_sampled_cache_index(uint64_t full_addr) {
+    full_addr = full_addr >> LOG2_BLOCK_SIZE;
+    full_addr = (full_addr << (64 - (LOG2_SAMPLED_CACHE_SETS + LOG2_LLC_SET)))
+                >> (64 - (LOG2_SAMPLED_CACHE_SETS + LOG2_LLC_SET));
+    return full_addr;
+}
+
+uint64_t get_sampled_cache_tag(uint64_t x) {
+    x >>= LOG2_LLC_SET + LOG2_BLOCK_SIZE + LOG2_SAMPLED_CACHE_SETS;
+    x = (x << (64 - SAMPLED_CACHE_TAG_BITS)) >> (64 - SAMPLED_CACHE_TAG_BITS);
+    return x;
+}
+
+int search_sampled_cache(unordered_map<uint32_t, SampledCacheLine*> &s_cache,
+                          uint64_t blockAddress, uint32_t set) {
+    if (s_cache.find(set) == s_cache.end()) return -1;
+    SampledCacheLine* sampled_set = s_cache[set];
+    for (int way = 0; way < SAMPLED_CACHE_WAYS; way++) {
+        if (sampled_set[way].valid && (sampled_set[way].tag == blockAddress))
+            return way;
+    }
+    return -1;
+}
+
+int temporal_difference(int init, int sample) {
+    if (sample > init) {
+        int diff = sample - init;
+        diff = diff * rpp_TEMP_DIFFERENCE;
+        diff = min(1, diff);
+        return min(init + diff, rpp_INF_RD);
+    } else if (sample < init) {
+        int diff = init - sample;
+        diff = diff * rpp_TEMP_DIFFERENCE;
+        diff = min(1, diff);
+        return max(init - diff, 0);
+    } else {
+        return init;
+    }
+}
+
+int increment_timestamp(int input) {
+    input++;
+    input = input % (1 << rpp_TIMESTAMP_BITS);
+    return input;
+}
+
+int time_elapsed(int global, int local) {
+    if (global >= local) return global - local;
+    global = global + (1 << rpp_TIMESTAMP_BITS);
+    return global - local;
+}
+
+// ==================== RDP Multi Helpers ====================
+
+void access_rdp_multi(
+    unordered_map<uint32_t, pair<int, RDP_Entry*>> &rdp_multi,
+    uint32_t last_signature, int sample)
+{
+    RDP_Entry *&head = rdp_multi[last_signature].second;
+    RDP_Entry *current = head;
+    while (current != nullptr) {
+        float lower = 0.8f * static_cast<float>(current->value);
+        float upper = 1.2f * static_cast<float>(current->value);
+        if (sample >= lower && sample <= upper) {
+            float old_total = static_cast<float>(current->value) * current->counts;
+            current->counts += 1.0f;
+            float new_value_f = (old_total + static_cast<float>(sample)) / current->counts;
+            current->value = static_cast<int>(round(new_value_f));
+            return;
+        }
+        current = current->next;
+    }
+    // No match: prepend new node
+    RDP_Entry *new_node = new RDP_Entry(sample, 1.0f);
+    new_node->next = head;
+    head = new_node;
+}
+
+void update_rdp_multi(
+    unordered_map<uint32_t, pair<int, RDP_Entry*>> &rdp_multi,
+    uint32_t last_signature)
+{
+    auto it = rdp_multi.find(last_signature);
+    if (it == rdp_multi.end()) return;
+
+    RDP_Entry *&head = it->second.second;
+
+    // Check if decay needed
+    bool need_decay = false;
+    RDP_Entry *current = head;
+    while (current != nullptr) {
+        if (current->counts >= 10.0f) { need_decay = true; break; }
+        current = current->next;
+    }
+
+    // Decay all nodes
+    if (need_decay) {
+        current = head;
+        while (current != nullptr) {
+            current->counts /= 2.0f;
+            current = current->next;
+        }
+    }
+
+    // Collect valid nodes, delete stale ones
+    vector<RDP_Entry*> valid_nodes;
+    current = head;
+    RDP_Entry *prev = nullptr;
+    while (current != nullptr) {
+        if (current->counts < 0.5f) {
+            RDP_Entry *to_delete = current;
+            if (prev == nullptr) head = current->next;
+            else prev->next = current->next;
+            current = current->next;
+            delete to_delete;
+        } else {
+            valid_nodes.push_back(current);
+            prev = current;
+            current = current->next;
+        }
+    }
+
+    // Sort by counts descending
+    sort(valid_nodes.begin(), valid_nodes.end(),
+         [](RDP_Entry *a, RDP_Entry *b) { return a->counts > b->counts; });
+
+    if (valid_nodes.empty()) {
+        head = nullptr;
+        it->second.first = 0;
+    } else {
+        for (size_t i = 0; i < valid_nodes.size() - 1; ++i)
+            valid_nodes[i]->next = valid_nodes[i + 1];
+        valid_nodes.back()->next = nullptr;
+        head = valid_nodes[0];
+
+        float total_weight = 0.0f, weighted_sum = 0.0f;
+        for (RDP_Entry *node : valid_nodes) {
+            weighted_sum += static_cast<float>(node->value) * node->counts;
+            total_weight += node->counts;
+        }
+        it->second.first = (total_weight > 0.0f)
+            ? static_cast<int>(round(weighted_sum / total_weight)) : 0;
+    }
+}
+
+// ==================== Detrain ====================
+
+void rpp_detrain(uint32_t set, int way) {
+    SampledCacheLine temp = rpp_sampled_cache[set][way];
+    if (!temp.valid) return;
+
+    if (rpp_rdp.count(temp.signature)) {
+        rpp_rdp[temp.signature].first =
+            min(rpp_rdp[temp.signature].first + 1, rpp_INF_RD);
+    } else {
+        rpp_rdp[temp.signature].first = rpp_INF_RD;
+    }
+
+    if (rpp_rdp_multi.count(temp.signature)) {
+        access_rdp_multi(rpp_rdp_multi, temp.signature, rpp_INF_RD);
+        update_rdp_multi(rpp_rdp_multi, temp.signature);
+    } else {
+        rpp_rdp_multi[temp.signature].first = rpp_INF_RD;
+        rpp_rdp_multi[temp.signature].second = new RDP_Entry(rpp_INF_RD, 1);
+    }
+    rpp_sampled_cache[set][way].valid = false;
+}
+
+// ==================== ETR Initialization ====================
+
+// Context-aware ETR initialization (matching backend etr_initial_context)
+// For local data (area==0): ETR = rdp + GRANULARITY * (context - offset)
+//   where offset depends on reuse relative to scaled thresholds
+// For remote data (area!=0): ETR = rdp (no bonus protection)
+int etr_initial_context(int rdp, uint8_t area, int reuse, int context) {
+    if (rdp == 0) return 0;
+    if (area == 0) {
+        // Scale thresholds by context^3 / GRANULARITY^3
+        int g3 = rpp_GRANULARITY * rpp_GRANULARITY * rpp_GRANULARITY;
+        int c3 = context * context * context;
+
+        if (reuse <= -500 * rpp_GRANULARITY / context && context < 2)
+            return rdp + (context + 5) * rpp_GRANULARITY;
+        if (reuse <= -100 * rpp_GRANULARITY / context && context < 3)
+            return rdp + (context + 4) * rpp_GRANULARITY;
+        else if (reuse <= -30 * rpp_GRANULARITY / context && context < 4)
+            return rdp + (context + 3) * rpp_GRANULARITY;
+        else if (reuse <= -10 * rpp_GRANULARITY / context && context < 4)
+            return rdp + (context + 2) * rpp_GRANULARITY;
+        else if (reuse <= -4 * rpp_GRANULARITY / context && context < 5)
+            return rdp + (context + 1) * rpp_GRANULARITY;
+        else if (reuse <= 4 * g3 / c3)
+            return rdp + context * rpp_GRANULARITY;
+        else if (reuse <= 20 * g3 / c3) {
+            if (context >= 7) return rdp + (context - 1) * rpp_GRANULARITY;
+            else return rdp + context * rpp_GRANULARITY;
+        } else if (reuse <= 50 * g3 / c3) {
+            if (context >= 7) return rdp + (context - 2) * rpp_GRANULARITY;
+            else if (context >= 6) return rdp + (context - 1) * rpp_GRANULARITY;
+            else return rdp + context * rpp_GRANULARITY;
+        } else if (reuse <= 200 * g3 / c3) {
+            if (context >= 7) return rdp + (context - 3) * rpp_GRANULARITY;
+            else if (context >= 6) return rdp + (context - 2) * rpp_GRANULARITY;
+            else if (context >= 5) return rdp + (context - 1) * rpp_GRANULARITY;
+            else return rdp + context * rpp_GRANULARITY;
+        } else if (reuse <= 1000 * g3 / c3) {
+            if (context >= 7) return rdp + (context - 4) * rpp_GRANULARITY;
+            else if (context >= 6) return rdp + (context - 3) * rpp_GRANULARITY;
+            else if (context >= 5) return rdp + (context - 2) * rpp_GRANULARITY;
+            else if (context >= 4) return rdp + (context - 1) * rpp_GRANULARITY;
+            else return rdp + context * rpp_GRANULARITY;
+        } else {
+            if (context >= 7) return rdp + (context - 5) * rpp_GRANULARITY;
+            else if (context >= 6) return rdp + (context - 4) * rpp_GRANULARITY;
+            else if (context >= 5) return rdp + (context - 3) * rpp_GRANULARITY;
+            else if (context >= 4) return rdp + (context - 2) * rpp_GRANULARITY;
+            else if (context >= 3) return rdp + (context - 1) * rpp_GRANULARITY;
+            else return rdp + context * rpp_GRANULARITY;
+        }
+    } else {
+        return rdp;  // remote: no bonus
+    }
+}
+
+// ==================== ChampSim Replacement Interface ====================
+
+void CACHE::llc_initialize_replacement()
+{
+    for (int i = 0; i < LLC_SET; i++) {
+        rpp_etr_clock[i] = rpp_GRANULARITY;
+        rpp_current_timestamp[i] = 0;
+        for (int w = 0; w < LLC_WAY; w++) {
+            rpp_etr[i][w] = 0;
+            rpp_etr_history[i][w] = -1;
+        }
+    }
+    for (uint32_t set = 0; set < LLC_SET; set++) {
+        if (is_sampled_set(set)) {
+            int modifier = 1 << LOG2_LLC_SET;
+            int limit = 1 << LOG2_SAMPLED_CACHE_SETS;
+            for (int i = 0; i < limit; i++) {
+                rpp_sampled_cache[set + modifier * i] =
+                    new SampledCacheLine[SAMPLED_CACHE_WAYS]();
+            }
+        }
+    }
+    rpp_gvc_reset();
+    cout << "RPP v2 initialized (LLC_SETS=" << LLC_SET
+         << ", LLC_WAYS=" << LLC_WAY
+         << ", INF_ETR=" << rpp_INF_ETR
+         << ", MAX_RD=" << rpp_MAX_RD
+         << ", GVC_CAP=" << RPP_GVC_CAP << ")" << endl;
+}
+
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
+                                 const BLOCK *current_set, uint64_t pc,
+                                 uint64_t full_addr, uint32_t type)
+{
+    // Return invalid block if exists
+    for (int way = 0; way < LLC_WAY; way++) {
+        if (current_set[way].valid == false) {
+            return way;
+        }
+    }
+
+    // Find victim: max |ETR|, ties broken by preferring negative ETR
+    int max_etr = 0;
+    int victim_way = 0;
+    for (int way = 0; way < LLC_WAY; way++) {
+        if (abs(rpp_etr[set][way]) > max_etr ||
+            (abs(rpp_etr[set][way]) == max_etr && rpp_etr[set][way] < 0)) {
+            max_etr = abs(rpp_etr[set][way]);
+            victim_way = way;
+        }
+    }
+
+    // Bypass check: if incoming PC has high reuse, don't evict
+    uint64_t pc_signature = get_pc_signature(pc, false, type == PREFETCH, cpu);
+    if (type != WRITEBACK && rpp_rdp.count(pc_signature) &&
+        (rpp_rdp[pc_signature].first > rpp_MAX_RD ||
+         rpp_rdp[pc_signature].first / rpp_GRANULARITY > max_etr)) {
+        return LLC_WAY;
+    }
+
+    // ==== GVC Insertion: save evicted local-area blocks that hit Sample Cache ====
+    if (is_sampled_set(set)) {
+        // Check victim block's area
+        int ev_area = MemoryMapper::get_instance()
+            .get_assigned_area(this->block[set][victim_way].full_addr, false);
+        if (ev_area == -1) ev_area = 0;
+
+        if (this->block[set][victim_way].valid && (ev_area == 0) &&
+            (rpp_etr[set][victim_way] > 0)) {
+            uint64_t ev_full_addr = this->block[set][victim_way].full_addr;
+            uint32_t sc_idx = get_sampled_cache_index(ev_full_addr);
+            uint64_t sc_tag = get_sampled_cache_tag(ev_full_addr);
+            int sc_way = search_sampled_cache(rpp_sampled_cache, sc_tag, sc_idx);
+            if (sc_way > -1) {
+                uint64_t last_sig = rpp_sampled_cache[sc_idx][sc_way].signature;
+                uint64_t now_ts = rpp_current_timestamp[set];
+                rpp_gvc_push_fifo(this->block[set][victim_way].tag, last_sig, now_ts);
+                rpp_gvc_pc_push(last_sig);
+                rpp_gvc_set_push(set);
+            }
+        }
+    }
+
+    return victim_way;
+}
+
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
+                                          uint32_t way, uint64_t full_addr,
+                                          uint64_t pc, uint64_t victim_addr,
+                                          uint32_t type, uint8_t hit)
+{
+    // Get area info for current access
+    int addr_area = MemoryMapper::get_instance().get_assigned_area(full_addr, false);
+    if (addr_area == -1) addr_area = 0;
+
+    // Handle writeback
+    if (type == WRITEBACK) {
+        if (!hit) {
+            rpp_etr[set][way] = -rpp_INF_ETR;
+            rpp_etr_history[set][way] = -1;
+        }
+        return;
+    }
+
+    // Get PC signature (matching mockingjay's get_pc_signature: no hit, no area)
+    pc = get_pc_signature(pc, hit, type == PREFETCH, cpu);
+
+    // ==================== Global VC Hit Processing ====================
+    if (is_sampled_set(set)) {
+        if (!hit) {
+            uint64_t cur_tag = full_addr / 64;
+            int idx = rpp_gvc_find(cur_tag);
+            if (idx >= 0) {
+                const RPP_GVC_Entry ge = rpp_gvc[(size_t)idx];
+                int dt = time_elapsed(rpp_current_timestamp[set], ge.insert_ts);
+
+                if (dt <= rpp_victim_INF_RD) {
+                    auto it = rpp_rdp.find(ge.last_pc_sig);
+                    if (it != rpp_rdp.end()) {
+                        it->second.second += 1;  // increment reuse count
+                        rpp_gvc_pc_hit[static_cast<uint64_t>(ge.last_pc_sig)]++;
+                        rpp_gvc_set_hit[set]++;
+                    }
+                }
+
+                rpp_gvc_purge_by_pc_and_tag(ge.last_pc_sig, ge.tag);
+            }
+        }
+
+        // ==================== Sampled Cache Logic ====================
+        uint32_t sampled_cache_index = get_sampled_cache_index(full_addr);
+        uint64_t sampled_cache_tag = get_sampled_cache_tag(full_addr);
+
+        int sampled_cache_way = search_sampled_cache(
+            rpp_sampled_cache, sampled_cache_tag, sampled_cache_index);
+
+        if (sampled_cache_way > -1) {
+            uint64_t last_signature =
+                rpp_sampled_cache[sampled_cache_index][sampled_cache_way].signature;
+            uint64_t last_timestamp =
+                rpp_sampled_cache[sampled_cache_index][sampled_cache_way].timestamp;
+            int sample = time_elapsed(rpp_current_timestamp[set], last_timestamp);
+
+            if (sample <= rpp_INF_RD) {
+                if (rpp_rdp.count(last_signature)) {
+                    float mean = rpp_rdp[last_signature].first;
+                    float err2 = (sample - mean) * (sample - mean);
+                    int init = rpp_rdp[last_signature].first;
+                    rpp_rdp[last_signature].first = temporal_difference(init, sample);
+                    rpp_rdp_var[last_signature] =
+                        (1.0f - rpp_TEMP_DIFFERENCE) * rpp_rdp_var[last_signature] +
+                        rpp_TEMP_DIFFERENCE * err2;
+                } else {
+                    rpp_rdp[last_signature].first = sample;
+                    rpp_rdp[last_signature].second = 0;
+                }
+
+                if (rpp_rdp_multi.count(last_signature)) {
+                    access_rdp_multi(rpp_rdp_multi, last_signature, sample);
+                    update_rdp_multi(rpp_rdp_multi, last_signature);
+                } else {
+                    rpp_rdp_multi[last_signature].first = sample;
+                    rpp_rdp_multi[last_signature].second = new RDP_Entry(sample, 1);
+                }
+
+                rpp_sampled_cache[sampled_cache_index][sampled_cache_way].valid = false;
+            }
+        }
+
+        // Find LRU way in sampled cache
+        int lru_way = -1;
+        int lru_rd = -1;
+        if (rpp_sampled_cache.find(sampled_cache_index) == rpp_sampled_cache.end()) {
+            cerr << "[Error] rpp: sampled_cache_index=" << sampled_cache_index
+                 << " not found" << endl;
+        } else {
+            for (int w = 0; w < SAMPLED_CACHE_WAYS; w++) {
+                if (rpp_sampled_cache[sampled_cache_index][w].valid == false) {
+                    lru_way = w;
+                    lru_rd = rpp_INF_RD + 1;
+                    continue;
+                }
+                uint64_t last_timestamp =
+                    rpp_sampled_cache[sampled_cache_index][w].timestamp;
+                int sample = time_elapsed(rpp_current_timestamp[set], last_timestamp);
+                if (sample > rpp_INF_RD) {
+                    lru_way = w;
+                    lru_rd = rpp_INF_RD + 1;
+                    rpp_detrain(sampled_cache_index, w);
+                } else if (sample > lru_rd) {
+                    lru_way = w;
+                    lru_rd = sample;
+                }
+            }
+            rpp_detrain(sampled_cache_index, lru_way);
+
+            // Insert new entry
+            for (int w = 0; w < SAMPLED_CACHE_WAYS; w++) {
+                if (rpp_sampled_cache[sampled_cache_index][w].valid == false) {
+                    rpp_sampled_cache[sampled_cache_index][w].valid = true;
+                    rpp_sampled_cache[sampled_cache_index][w].signature = pc;
+                    rpp_sampled_cache[sampled_cache_index][w].tag = sampled_cache_tag;
+                    rpp_sampled_cache[sampled_cache_index][w].timestamp =
+                        rpp_current_timestamp[set];
+                    break;
+                }
+            }
+        }
+
+        rpp_current_timestamp[set] =
+            increment_timestamp(rpp_current_timestamp[set]);
+    }  // end is_sampled_set
+
+    // ==================== ETR Decrement ====================
+    if (rpp_etr_clock[set] == rpp_GRANULARITY) {
+        for (int w = 0; w < LLC_WAY; w++) {
+            if ((uint32_t)w != way && abs(rpp_etr[set][w]) <= rpp_INF_ETR) {
+                // Compute reuse from GVC stats for current PC
+                int reuse = 0;
+                auto itgvc = rpp_gvc_pc.find(pc);
+                if (itgvc != rpp_gvc_pc.end()) {
+                    reuse = rpp_gvc_pc_hit[pc] * 2 - rpp_gvc_pc[pc];
+                }
+
+                // Reset ETR to 0 if it matches the initial context value
+                // (prevents runaway negative values)
+                if (rpp_etr[set][w] ==
+                    (etr_initial_context(1, addr_area, reuse, rpp_CONTEXT) /
+                     rpp_GRANULARITY))
+                    rpp_etr[set][w] = 0;
+
+                rpp_etr[set][w]--;
+            }
+        }
+        rpp_etr_clock[set] = 0;
+    }
+    rpp_etr_clock[set]++;
+
+    // ==================== ETR Initialization on Fill ====================
+    if (way < LLC_WAY) {
+        if (!rpp_rdp.count(pc)) {
+            if (NUM_CPUS == 1) {
+                rpp_etr[set][way] = 0;
+            } else {
+                rpp_etr[set][way] = rpp_INF_ETR - 1;
+            }
+            rpp_etr_history[set][way] = -1;
+        } else {
+            if (rpp_rdp[pc].first > rpp_MAX_RD) {
+                rpp_etr[set][way] = rpp_INF_ETR;
+                rpp_etr_history[set][way] = rpp_etr[set][way];
+            } else {
+                int reuse = 0;
+                auto itgvc = rpp_gvc_pc.find(pc);
+                if (itgvc != rpp_gvc_pc.end()) {
+                    reuse = rpp_gvc_pc_hit[pc] * 2 - rpp_gvc_pc[pc];
+                }
+                rpp_etr[set][way] =
+                    etr_initial_context(rpp_rdp[pc].first, addr_area,
+                                        reuse, rpp_CONTEXT) /
+                    rpp_GRANULARITY;
+                rpp_etr_history[set][way] = rpp_etr[set][way];
+            }
+        }
+    }
+}
+
+void CACHE::llc_replacement_final_stats()
+{
+    cout << endl;
+    cout << "===========================================================" << endl;
+    cout << "        LLC Access & Miss by Memory Area (RPP v2)     " << endl;
+    cout << "===========================================================" << endl;
+
+    const char* area_names[] = {"Local DRAM (Area 0)", "NUMA Node  (Area 1)", "CXL Node   (Area 2)"};
+    uint64_t total_access = 0, total_miss = 0;
+
+    for (int a = 0; a < 3; a++) {
+        uint64_t access = llc_access_by_area[a];
+        uint64_t miss   = llc_miss_by_area[a];
+        double miss_rate = (access > 0) ? (100.0 * miss / access) : 0.0;
+
+        cout << area_names[a] << ":" << endl;
+        cout << "    Access: " << setw(12) << access
+             << "  Miss: " << setw(12) << miss
+             << "  Miss Rate: " << fixed << setprecision(2) << setw(7) << miss_rate << "%" << endl;
+
+        total_access += access;
+        total_miss   += miss;
+    }
+
+    double total_miss_rate = (total_access > 0) ? (100.0 * total_miss / total_access) : 0.0;
+    cout << "-----------------------------------------------------------" << endl;
+    cout << "Total                    Access: " << setw(12) << total_access
+         << "  Miss: " << setw(12) << total_miss
+         << "  Miss Rate: " << fixed << setprecision(2) << setw(7) << total_miss_rate << "%" << endl;
+
+    uint64_t total_miss_times =
+        llc_miss_by_area[0] * 80 +
+        (llc_miss_by_area[1] + llc_miss_by_area[2]) * 250;
+    cout << "-----------------------------------------------------------" << endl;
+    cout << "Total Estimated Miss Latency Cost : " << total_miss_times << endl;
+
+    // Show total sim_access stats for all three cache levels
+    struct CacheStats {
+        const char* level;
+        uint64_t access;
+        uint64_t hit;
+        uint64_t miss;
+    };
+    CacheStats cstats[3];
+    // Per-level summary — accumulate across all per-type counters per cache
+    auto accum = [](CACHE &c) -> CacheStats {
+        uint64_t a = 0, h = 0, m = 0;
+        for (int cpu = 0; cpu < NUM_CPUS; cpu++) {
+            for (int t = 0; t < NUM_TYPES; t++) {
+                a += c.sim_access[cpu][t];
+                h += c.sim_hit[cpu][t];
+                m += c.sim_miss[cpu][t];
+            }
+        }
+        return {nullptr, a, h, m};
+    };
+    cstats[0] = accum(ooo_cpu[0].L1D);  cstats[0].level = "L1D";
+    cstats[1] = accum(ooo_cpu[0].L2C);  cstats[1].level = "L2C";
+    cstats[2] = accum(*this);           cstats[2].level = "LLC";
+
+    cout << "===========================================================" << endl;
+    cout << "     Cache Hierarchy Access / Hit / Miss Summary       " << endl;
+    cout << "===========================================================" << endl;
+    cout << "Level   " << setw(14) << "Access" << setw(14) << "Hit"
+         << setw(14) << "Miss" << setw(12) << "Hit Rate" << endl;
+    cout << "-----------------------------------------------------------" << endl;
+    for (int i = 0; i < 3; i++) {
+        double hr = (cstats[i].access > 0)
+            ? (100.0 * cstats[i].hit / cstats[i].access) : 0.0;
+        cout << setw(6) << left << cstats[i].level << right
+             << setw(14) << cstats[i].access
+             << setw(14) << cstats[i].hit
+             << setw(14) << cstats[i].miss
+             << setw(10) << fixed << setprecision(2) << hr << "%" << endl;
+    }
+    cout << "===========================================================" << endl;
+
+    // RPP internal stats
+    cout << "RPP RDP entries: " << rpp_rdp.size() << endl;
+    cout << "RPP RDP multi entries: " << rpp_rdp_multi.size() << endl;
+    cout << "RPP RDP variance entries: " << rpp_rdp_var.size() << endl;
+    cout << "RPP GVC size: " << rpp_gvc.size() << endl;
+    cout << "RPP GVC PC insertions: " << rpp_gvc_pc.size() << endl;
+    cout << "RPP GVC PC hits: " << rpp_gvc_pc_hit.size() << endl;
+    cout << endl;
+
+    // Cleanup
+    for (auto &entry : rpp_sampled_cache) {
+        delete[] entry.second;
+    }
+    rpp_sampled_cache.clear();
+
+    for (auto &kv : rpp_rdp_multi) {
+        RDP_Entry *node = kv.second.second;
+        while (node != nullptr) {
+            RDP_Entry *next = node->next;
+            delete node;
+            node = next;
+        }
+    }
+    rpp_rdp_multi.clear();
+
+    rpp_gvc_reset();
+}
