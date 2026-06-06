@@ -48,6 +48,7 @@ constexpr int PC_SIGNATURE_BITS = LOG2_LLC_SIZE - 10;
 constexpr int RPP_GVC_CAP = 512;
 
 constexpr int rpp_CONTEXT = 8;  // default context parameter
+constexpr double rpp_FLEXMIN_PENALTY = 2.0 - log2(NUM_CPUS)/4.0;
 
 // ==================== Data Structures ====================
 
@@ -488,12 +489,32 @@ uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
         }
     }
 
-    // Bypass check: if incoming PC has high reuse, don't evict
+    // Bypass check: if incoming block's predicted ETR exceeds all existing
+    // blocks, it would be evicted immediately — don't waste LLC space.
     uint64_t pc_signature = get_pc_signature(pc, false, type == PREFETCH, cpu);
-    if (type != WRITEBACK && rpp_rdp.count(pc_signature) &&
-        (rpp_rdp[pc_signature].first > rpp_MAX_RD ||
-         rpp_rdp[pc_signature].first / rpp_GRANULARITY > max_etr)) {
-        return LLC_WAY;
+    if (type != WRITEBACK && rpp_rdp.count(pc_signature)) {
+        // Condition 1: RDP exceeds MAX_RD → reuse too far, always bypass
+        if (rpp_rdp[pc_signature].first > rpp_MAX_RD) {
+            return LLC_WAY;
+        }
+        // Condition 2: compute the ETR this block would get if inserted
+        // (using the same etr_initial_context as the fill path),
+        // and compare against current max |ETR| in the set
+        int addr_area = MemoryMapper::get_instance().get_assigned_area(full_addr, false);
+        if (addr_area == -1) addr_area = 0;
+
+        int reuse = 0;
+        auto itgvc = rpp_gvc_pc.find(pc_signature);
+        if (itgvc != rpp_gvc_pc.end()) {
+            reuse = rpp_gvc_pc_hit[pc_signature] * 2 - rpp_gvc_pc[pc_signature];
+        }
+
+        int predicted_etr = etr_initial_context(rpp_rdp[pc_signature].first,
+                                                 addr_area, reuse, rpp_CONTEXT)
+                            / rpp_GRANULARITY;
+        if (predicted_etr > max_etr) {
+            return LLC_WAY;
+        }
     }
 
     // ==== GVC Insertion: save evicted local-area blocks that hit Sample Cache ====
@@ -580,6 +601,9 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
             int sample = time_elapsed(rpp_current_timestamp[set], last_timestamp);
 
             if (sample <= rpp_INF_RD) {
+                if (type == PREFETCH) {
+                    sample = sample * rpp_FLEXMIN_PENALTY;
+                }
                 if (rpp_rdp.count(last_signature)) {
                     float mean = rpp_rdp[last_signature].first;
                     float err2 = (sample - mean) * (sample - mean);
