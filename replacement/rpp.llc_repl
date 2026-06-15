@@ -12,6 +12,7 @@
 #include "cache.h"
 #include "memory_mapper.h"
 #include "ooo_cpu.h"
+#include "dram_controller.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -38,6 +39,10 @@ constexpr int rpp_MAX_RD = rpp_INF_RD - 22;                       // 95-22 = 73
 constexpr int rpp_TIMESTAMP_BITS = 8;
 constexpr double rpp_TEMP_DIFFERENCE = 1.0 / 16.0;
 
+// ==================== Diagnostic Configuration ====================
+#define RPP_FULL_SAMPLING 0     // 1 = sample all LLC sets; 0 = sample 1/256 sets
+// ================================================================
+
 // Sampled cache config
 constexpr int SAMPLED_CACHE_WAYS = 5;
 constexpr int LOG2_SAMPLED_CACHE_SETS = 4;
@@ -45,7 +50,11 @@ constexpr int SAMPLED_CACHE_TAG_BITS = 31 - LOG2_LLC_SIZE;
 constexpr int PC_SIGNATURE_BITS = LOG2_LLC_SIZE - 10;
 
 // Global Victim Cache
+#if RPP_FULL_SAMPLING
+constexpr int RPP_GVC_CAP = 2048;  // moderate expansion for full sampling
+#else
 constexpr int RPP_GVC_CAP = 512;
+#endif
 
 constexpr int rpp_CONTEXT = 8;  // default context parameter
 constexpr double rpp_FLEXMIN_PENALTY = 2.0 - log2(NUM_CPUS)/4.0;
@@ -81,6 +90,7 @@ static unordered_map<uint32_t, SampledCacheLine*> rpp_sampled_cache;
 // ETR table
 static int rpp_etr[LLC_SET][LLC_WAY];
 static int rpp_etr_history[LLC_SET][LLC_WAY];
+static int rpp_etr_no_offset[LLC_SET][LLC_WAY];
 
 // ETR clock
 static int rpp_etr_clock[LLC_SET];
@@ -106,6 +116,32 @@ static unordered_map<uint64_t, int> rpp_gvc_set;
 static unordered_map<uint64_t, int> rpp_gvc_pc_hit;
 static unordered_map<uint64_t, int> rpp_gvc_set_hit;
 
+// ==================== Diagnostic Counters ====================
+static uint64_t rpp_diag_sc_lookups = 0;         // total sampled cache lookups
+static uint64_t rpp_diag_sc_hit_found = 0;       // found in SC (reuse detected)
+static uint64_t rpp_diag_sc_hit_too_far = 0;     // found but sample > INF_RD (not trained)
+static uint64_t rpp_diag_sc_hit_trained = 0;     // found AND trained (<= INF_RD)
+static uint64_t rpp_diag_sc_insert = 0;          // new entries inserted into SC
+static uint64_t rpp_diag_sc_detrain_valid = 0;   // detrain of valid entry (evict before reuse)
+static uint64_t rpp_diag_sc_detrain_empty = 0;   // detrain of invalid/empty slot
+static uint64_t rpp_diag_llc_bypass_maxrd = 0;   // bypass due to rdp > MAX_RD
+static uint64_t rpp_diag_llc_bypass_etr = 0;     // bypass due to predicted_etr > max_etr
+static uint64_t rpp_diag_gvc_insert = 0;         // GVC push operations
+static uint64_t rpp_diag_gvc_hit = 0;            // GVC hit events (reuse boost)
+static uint64_t rpp_diag_gvc_full_drop = 0;      // GVC evictions when full
+static uint64_t rpp_diag_etr_no_rdp = 0;         // ETR=0 fills (no RDP entry for PC)
+static uint64_t rpp_diag_etr_local = 0;          // ETR fills for local data WITH RDP
+static uint64_t rpp_diag_etr_remote = 0;         // ETR fills for remote data WITH RDP
+static uint64_t rpp_diag_etr_maxrd_bypass = 0;   // ETR=INF_ETR fills (rdp > MAX_RD)
+
+// Additional per-trace metrics
+static uint64_t rpp_diag_gvc_candidate = 0;      // evictions where sampled+area0+ETR>0 (GVC-eligible)
+
+// Track total fills via the ETR breakdown counters
+static inline uint64_t rpp_total_fills() {
+    return rpp_diag_etr_no_rdp + rpp_diag_etr_local + rpp_diag_etr_remote + rpp_diag_etr_maxrd_bypass;
+}
+
 // ==================== GVC Helpers ====================
 
 static inline void rpp_gvc_reset() {
@@ -129,8 +165,10 @@ static inline void rpp_gvc_push_fifo(uint64_t tag, uint64_t last_pc_sig,
                                       uint64_t insert_ts) {
     int old = rpp_gvc_find(tag);
     if (old >= 0) rpp_gvc_erase_index((size_t)old);
-    if (rpp_gvc.size() >= (size_t)RPP_GVC_CAP)
+    if (rpp_gvc.size() >= (size_t)RPP_GVC_CAP) {
+        rpp_diag_gvc_full_drop++;
         rpp_gvc.erase(rpp_gvc.begin());
+    }
     rpp_gvc.push_back(RPP_GVC_Entry{tag, last_pc_sig, insert_ts, true});
 }
 
@@ -362,7 +400,11 @@ void update_rdp_multi(
 
 void rpp_detrain(uint32_t set, int way) {
     SampledCacheLine temp = rpp_sampled_cache[set][way];
-    if (!temp.valid) return;
+    if (!temp.valid) {
+        rpp_diag_sc_detrain_empty++;
+        return;
+    }
+    rpp_diag_sc_detrain_valid++;  // valid entry evicted before reuse
 
     if (rpp_rdp.count(temp.signature)) {
         rpp_rdp[temp.signature].first =
@@ -446,11 +488,17 @@ void CACHE::llc_initialize_replacement()
         rpp_current_timestamp[i] = 0;
         for (int w = 0; w < LLC_WAY; w++) {
             rpp_etr[i][w] = 0;
-            rpp_etr_history[i][w] = -1;
+            rpp_etr_history[i][w] = 0;
+            rpp_etr_no_offset[i][w] = 0;
         }
     }
     for (uint32_t set = 0; set < LLC_SET; set++) {
+#if RPP_FULL_SAMPLING
+        // Full sampling: all LLC sets participate
+        {
+#else
         if (is_sampled_set(set)) {
+#endif
             int modifier = 1 << LOG2_LLC_SET;
             int limit = 1 << LOG2_SAMPLED_CACHE_SETS;
             for (int i = 0; i < limit; i++) {
@@ -460,11 +508,21 @@ void CACHE::llc_initialize_replacement()
         }
     }
     rpp_gvc_reset();
+#if RPP_FULL_SAMPLING
+    cout << "RPP v2 DIAGNOSTIC initialized (FULL SAMPLING, LLC_SETS=" << LLC_SET
+         << ", SC groups=" << (LLC_SET * (1 << LOG2_SAMPLED_CACHE_SETS))
+         << ", LLC_WAYS=" << LLC_WAY
+         << ", INF_ETR=" << rpp_INF_ETR
+         << ", INF_RD=" << rpp_INF_RD
+         << ", MAX_RD=" << rpp_MAX_RD
+         << ", GVC_CAP=" << RPP_GVC_CAP << ")" << endl;
+#else
     cout << "RPP v2 initialized (LLC_SETS=" << LLC_SET
          << ", LLC_WAYS=" << LLC_WAY
          << ", INF_ETR=" << rpp_INF_ETR
          << ", MAX_RD=" << rpp_MAX_RD
          << ", GVC_CAP=" << RPP_GVC_CAP << ")" << endl;
+#endif
 }
 
 uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
@@ -495,6 +553,7 @@ uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
     if (type != WRITEBACK && rpp_rdp.count(pc_signature)) {
         // Condition 1: RDP exceeds MAX_RD → reuse too far, always bypass
         if (rpp_rdp[pc_signature].first > rpp_MAX_RD) {
+            rpp_diag_llc_bypass_maxrd++;
             return LLC_WAY;
         }
         // Condition 2: compute the ETR this block would get if inserted
@@ -513,12 +572,17 @@ uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
                                                  addr_area, reuse, rpp_CONTEXT)
                             / rpp_GRANULARITY;
         if (predicted_etr > max_etr) {
+            rpp_diag_llc_bypass_etr++;
             return LLC_WAY;
         }
     }
 
     // ==== GVC Insertion: save evicted local-area blocks that hit Sample Cache ====
+#if RPP_FULL_SAMPLING
+    if (true) {  // full sampling: check every eviction
+#else
     if (is_sampled_set(set)) {
+#endif
         // Check victim block's area
         int ev_area = MemoryMapper::get_instance()
             .get_assigned_area(this->block[set][victim_way].full_addr, false);
@@ -526,6 +590,7 @@ uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
 
         if (this->block[set][victim_way].valid && (ev_area == 0) &&
             (rpp_etr[set][victim_way] > 0)) {
+            rpp_diag_gvc_candidate++;  // eligible for GVC (sampled + area0 + ETR>0)
             uint64_t ev_full_addr = this->block[set][victim_way].full_addr;
             uint32_t sc_idx = get_sampled_cache_index(ev_full_addr);
             uint64_t sc_tag = get_sampled_cache_tag(ev_full_addr);
@@ -536,6 +601,7 @@ uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
                 rpp_gvc_push_fifo(this->block[set][victim_way].tag, last_sig, now_ts);
                 rpp_gvc_pc_push(last_sig);
                 rpp_gvc_set_push(set);
+                rpp_diag_gvc_insert++;
             }
         }
     }
@@ -556,7 +622,8 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
     if (type == WRITEBACK) {
         if (!hit) {
             rpp_etr[set][way] = -rpp_INF_ETR;
-            rpp_etr_history[set][way] = -1;
+            rpp_etr_history[set][way] = rpp_etr[set][way];
+            rpp_etr_no_offset[set][way] = rpp_etr[set][way];
         }
         return;
     }
@@ -565,11 +632,16 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
     pc = get_pc_signature(pc, hit, type == PREFETCH, cpu);
 
     // ==================== Global VC Hit Processing ====================
+#if RPP_FULL_SAMPLING
+    if (true) {  // full sampling: check all sets
+#else
     if (is_sampled_set(set)) {
+#endif
         if (!hit) {
             uint64_t cur_tag = full_addr / 64;
             int idx = rpp_gvc_find(cur_tag);
             if (idx >= 0) {
+                rpp_diag_gvc_hit++;
                 const RPP_GVC_Entry ge = rpp_gvc[(size_t)idx];
                 int dt = time_elapsed(rpp_current_timestamp[set], ge.insert_ts);
 
@@ -587,6 +659,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
         }
 
         // ==================== Sampled Cache Logic ====================
+        rpp_diag_sc_lookups++;
         uint32_t sampled_cache_index = get_sampled_cache_index(full_addr);
         uint64_t sampled_cache_tag = get_sampled_cache_tag(full_addr);
 
@@ -594,6 +667,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
             rpp_sampled_cache, sampled_cache_tag, sampled_cache_index);
 
         if (sampled_cache_way > -1) {
+            rpp_diag_sc_hit_found++;
             uint64_t last_signature =
                 rpp_sampled_cache[sampled_cache_index][sampled_cache_way].signature;
             uint64_t last_timestamp =
@@ -601,6 +675,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
             int sample = time_elapsed(rpp_current_timestamp[set], last_timestamp);
 
             if (sample <= rpp_INF_RD) {
+                rpp_diag_sc_hit_trained++;
                 if (type == PREFETCH) {
                     sample = sample * rpp_FLEXMIN_PENALTY;
                 }
@@ -626,6 +701,8 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
                 }
 
                 rpp_sampled_cache[sampled_cache_index][sampled_cache_way].valid = false;
+            } else {
+                rpp_diag_sc_hit_too_far++;  // reuse detected but distance > INF_RD
             }
         }
 
@@ -659,6 +736,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
             // Insert new entry
             for (int w = 0; w < SAMPLED_CACHE_WAYS; w++) {
                 if (rpp_sampled_cache[sampled_cache_index][w].valid == false) {
+                    rpp_diag_sc_insert++;
                     rpp_sampled_cache[sampled_cache_index][w].valid = true;
                     rpp_sampled_cache[sampled_cache_index][w].signature = pc;
                     rpp_sampled_cache[sampled_cache_index][w].tag = sampled_cache_tag;
@@ -677,18 +755,10 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
     if (rpp_etr_clock[set] == rpp_GRANULARITY) {
         for (int w = 0; w < LLC_WAY; w++) {
             if ((uint32_t)w != way && abs(rpp_etr[set][w]) <= rpp_INF_ETR) {
-                // Compute reuse from GVC stats for current PC
-                int reuse = 0;
-                auto itgvc = rpp_gvc_pc.find(pc);
-                if (itgvc != rpp_gvc_pc.end()) {
-                    reuse = rpp_gvc_pc_hit[pc] * 2 - rpp_gvc_pc[pc];
-                }
-
                 // Reset ETR to 0 if it matches the initial context value
                 // (prevents runaway negative values)
                 if (rpp_etr[set][w] ==
-                    (etr_initial_context(1, addr_area, reuse, rpp_CONTEXT) /
-                     rpp_GRANULARITY))
+                    (rpp_etr_history[set][w] - rpp_etr_no_offset[set][w]))
                     rpp_etr[set][w] = 0;
 
                 rpp_etr[set][w]--;
@@ -701,17 +771,23 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
     // ==================== ETR Initialization on Fill ====================
     if (way < LLC_WAY) {
         if (!rpp_rdp.count(pc)) {
+            rpp_diag_etr_no_rdp++;
             if (NUM_CPUS == 1) {
                 rpp_etr[set][way] = 0;
             } else {
                 rpp_etr[set][way] = rpp_INF_ETR - 1;
             }
-            rpp_etr_history[set][way] = -1;
+            rpp_etr_history[set][way] = rpp_etr[set][way];
+            rpp_etr_no_offset[set][way] = rpp_etr[set][way];
         } else {
             if (rpp_rdp[pc].first > rpp_MAX_RD) {
+                rpp_diag_etr_maxrd_bypass++;
                 rpp_etr[set][way] = rpp_INF_ETR;
                 rpp_etr_history[set][way] = rpp_etr[set][way];
+                rpp_etr_no_offset[set][way] = rpp_etr[set][way];
             } else {
+                if (addr_area == 0) rpp_diag_etr_local++;
+                else rpp_diag_etr_remote++;
                 int reuse = 0;
                 auto itgvc = rpp_gvc_pc.find(pc);
                 if (itgvc != rpp_gvc_pc.end()) {
@@ -722,6 +798,7 @@ void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set,
                                         reuse, rpp_CONTEXT) /
                     rpp_GRANULARITY;
                 rpp_etr_history[set][way] = rpp_etr[set][way];
+                rpp_etr_no_offset[set][way] = rpp_rdp[pc].first / rpp_GRANULARITY;
             }
         }
     }
@@ -757,9 +834,11 @@ void CACHE::llc_replacement_final_stats()
          << "  Miss: " << setw(12) << total_miss
          << "  Miss Rate: " << fixed << setprecision(2) << setw(7) << total_miss_rate << "%" << endl;
 
-    uint64_t total_miss_times =
-        llc_miss_by_area[0] * 80 +
-        (llc_miss_by_area[1] + llc_miss_by_area[2]) * 250;
+    // Use actual framework DRAM/CXL timing parameters for weighted miss latency
+    uint64_t dram_miss_lat = tRP + tRCD + tCAS + DRAM_DBUS_RETURN_TIME;
+    uint64_t cxl_miss_lat = tRP_CXL + tRCD_CXL + tCAS_CXL + CXL_DBUS_RETURN_TIME;
+    uint64_t total_miss_times = llc_miss_by_area[0] * dram_miss_lat
+                              + (llc_miss_by_area[1] + llc_miss_by_area[2]) * cxl_miss_lat;
     cout << "-----------------------------------------------------------" << endl;
     cout << "Total Estimated Miss Latency Cost : " << total_miss_times << endl;
 
@@ -804,14 +883,128 @@ void CACHE::llc_replacement_final_stats()
     }
     cout << "===========================================================" << endl;
 
-    // RPP internal stats
-    cout << "RPP RDP entries: " << rpp_rdp.size() << endl;
-    cout << "RPP RDP multi entries: " << rpp_rdp_multi.size() << endl;
-    cout << "RPP RDP variance entries: " << rpp_rdp_var.size() << endl;
-    cout << "RPP GVC size: " << rpp_gvc.size() << endl;
-    cout << "RPP GVC PC insertions: " << rpp_gvc_pc.size() << endl;
-    cout << "RPP GVC PC hits: " << rpp_gvc_pc_hit.size() << endl;
+    // ==================== UNIFIED PER-TRACE METRICS (20 metrics) ====================
     cout << endl;
+    cout << "===========================================================" << endl;
+    cout << "  RPP_PER_TRACE_METRICS (20 metrics for analysis)" << endl;
+    cout << "===========================================================" << endl;
+
+    // --- Compute derived metrics ---
+    uint64_t total_fills_val = rpp_total_fills();
+    uint64_t sc_insert_total = rpp_diag_sc_insert;
+    uint64_t sc_lookups_val  = rpp_diag_sc_lookups;
+
+    // avg_RDP_value
+    double avg_rdp = 0.0;
+    if (!rpp_rdp.empty()) {
+        uint64_t rdp_sum = 0;
+        for (auto &kv : rpp_rdp) rdp_sum += kv.second.first;
+        avg_rdp = (double)rdp_sum / rpp_rdp.size();
+    }
+
+    // training efficiency & detrain rate
+    double sc_train_eff = (sc_lookups_val > 0)
+        ? (100.0 * rpp_diag_sc_hit_trained / sc_lookups_val) : 0.0;
+    double sc_detrain_rate = (sc_insert_total > 0)
+        ? (100.0 * rpp_diag_sc_detrain_valid / sc_insert_total) : 0.0;
+
+    // ETR fill distribution percentages & diff fraction
+    double etr0_pct = 0, etr_local_pct = 0, etr_remote_pct = 0, etr_maxrd_pct = 0;
+    if (total_fills_val > 0) {
+        etr0_pct     = 100.0 * rpp_diag_etr_no_rdp      / total_fills_val;
+        etr_local_pct  = 100.0 * rpp_diag_etr_local       / total_fills_val;
+        etr_remote_pct = 100.0 * rpp_diag_etr_remote      / total_fills_val;
+        etr_maxrd_pct  = 100.0 * rpp_diag_etr_maxrd_bypass / total_fills_val;
+    }
+    double diff_fraction = etr_local_pct;  // local fills are where RPP≠MJ
+    uint64_t diff_events_est = rpp_diag_etr_local;  // absolute count
+
+    // GVC
+    double gvc_hit_rate = (rpp_diag_gvc_insert > 0)
+        ? (100.0 * rpp_diag_gvc_hit / rpp_diag_gvc_insert) : 0.0;
+
+    // RDP source breakdown
+    uint64_t rdp_from_detrain_count = 0;
+    for (auto &kv : rpp_rdp) if (kv.second.first >= rpp_INF_RD - 1) rdp_from_detrain_count++;
+    uint64_t rdp_from_reuse_count = rpp_rdp.size() - rdp_from_detrain_count;
+
+    // LLC access/miss totals (from sim counters for accurate hit/miss rate)
+    uint64_t llc_sim_access = 0, llc_sim_hit = 0, llc_sim_miss = 0;
+    for (int cpu = 0; cpu < NUM_CPUS; cpu++) {
+        for (int t = 0; t < NUM_TYPES; t++) {
+            llc_sim_access += sim_access[cpu][t];
+            llc_sim_hit   += sim_hit[cpu][t];
+            llc_sim_miss  += sim_miss[cpu][t];
+        }
+    }
+    double llc_miss_rate = (llc_sim_access > 0)
+        ? (100.0 * llc_sim_miss / llc_sim_access) : 0.0;
+    double llc_hit_rate = (llc_sim_access > 0)
+        ? (100.0 * llc_sim_hit / llc_sim_access) : 0.0;
+
+    // Area fill distribution (from area counters, tracks fills from lower memory)
+    uint64_t llc_fill_access = 0, llc_fill_miss = 0;
+    double dram_pct = 0, numa_pct = 0, cxl_pct = 0;
+    for (int a = 0; a < 3; a++) {
+        llc_fill_access += llc_access_by_area[a];
+        llc_fill_miss   += llc_miss_by_area[a];
+    }
+    if (llc_fill_access > 0) {
+        dram_pct = 100.0 * llc_access_by_area[0] / llc_fill_access;
+        numa_pct = 100.0 * llc_access_by_area[1] / llc_fill_access;
+        cxl_pct  = 100.0 * llc_access_by_area[2] / llc_fill_access;
+    }
+    // Per-area miss counts (not rates — these are fill-based)
+    uint64_t dram_miss = llc_miss_by_area[0];
+    uint64_t numa_miss = llc_miss_by_area[1];
+    uint64_t cxl_miss  = llc_miss_by_area[2];
+
+    // Miss latency cost (using framework DRAM/CXL timing from above)
+    uint64_t total_miss_latency =
+        llc_miss_by_area[0] * dram_miss_lat +
+        (llc_miss_by_area[1] + llc_miss_by_area[2]) * cxl_miss_lat;
+
+    // Number of simulated instructions (= simulation_instructions from O3_CPU)
+    uint64_t sim_instrs = ooo_cpu[0].finish_sim_instr - ooo_cpu[0].begin_sim_instr;
+    uint64_t sim_cycles = ooo_cpu[0].finish_sim_cycle - ooo_cpu[0].begin_sim_cycle;
+    double ipc_val = (sim_cycles > 0) ? (double)sim_instrs / sim_cycles : 0.0;
+
+    // ---- Output the 20 metrics ----
+    cout << fixed << setprecision(2);
+    cout << "  [ 1] LLC_total_access        = " << setw(12) << llc_sim_access << endl;
+    cout << "  [ 2] LLC_miss_rate           = " << setw(11) << llc_miss_rate << "%  (hit_rate="
+         << llc_hit_rate << "%)" << endl;
+    cout << "  [ 3] Area_fill_distribution  = DRAM " << setw(5) << dram_pct
+         << "% / NUMA " << setw(5) << numa_pct << "% / CXL " << setw(5) << cxl_pct << "%" << endl;
+    cout << "  [ 4] SC_lookups              = " << setw(12) << sc_lookups_val << endl;
+    cout << "  [ 5] SC_trained              = " << setw(12) << rpp_diag_sc_hit_trained << endl;
+    cout << "  [ 6] SC_training_efficiency  = " << setw(11) << sc_train_eff << "%  (trained/lookups)" << endl;
+    cout << "  [ 7] SC_detrain_rate         = " << setw(11) << sc_detrain_rate << "%  (detrain_valid/inserts)" << endl;
+    cout << "  [ 8] RDP_entries             = " << setw(12) << rpp_rdp.size() << endl;
+    cout << "  [ 9] RDP_multi_entries       = " << setw(12) << rpp_rdp_multi.size() << endl;
+    cout << "  [10] avg_RDP_value           = " << setw(11) << avg_rdp << "  (mean reuse distance)" << endl;
+    cout << "  [11] RDP_source_ratio        = reuse " << rdp_from_reuse_count
+         << " / detrain " << rdp_from_detrain_count << endl;
+    cout << "  [12] ETR_fill_distribution   = 0:" << setw(5) << etr0_pct
+         << "%  local:" << setw(5) << etr_local_pct << "%  remote:" << setw(5) << etr_remote_pct
+         << "%  maxrd:" << setw(5) << etr_maxrd_pct << "%" << endl;
+    cout << "  [13] diff_fraction           = " << setw(11) << diff_fraction
+         << "%  (RPP!=MJ fill ratio = local_pct)" << endl;
+    cout << "  [14] diff_events             = " << setw(12) << diff_events_est
+         << "  (estimated absolute count)" << endl;
+    cout << "  [15] bypass_by_MAX_RD        = " << setw(12) << rpp_diag_llc_bypass_maxrd << endl;
+    cout << "  [16] bypass_by_pred_ETR      = " << setw(12) << rpp_diag_llc_bypass_etr << endl;
+    cout << "  [17] GVC_insert/hit/rate     = " << setw(6) << rpp_diag_gvc_insert
+         << " / " << setw(6) << rpp_diag_gvc_hit << " / " << setw(5) << gvc_hit_rate << "%" << endl;
+    cout << "  [18] GVC_candidate_evictions = " << setw(12) << rpp_diag_gvc_candidate
+         << "  (sampled+area0+ETR>0)" << endl;
+    cout << "  [19] Area_miss_counts        = DRAM " << dram_miss
+         << " / NUMA " << numa_miss << " / CXL " << cxl_miss << endl;
+    cout << "  [20] IPC / Miss_LatCost      = " << setw(11) << setprecision(6) << ipc_val
+         << setprecision(2) << " / " << total_miss_latency << endl;
+    cout << "===========================================================" << endl;
+    cout << endl;
+    // =================================================================
 
     // Cleanup
     for (auto &entry : rpp_sampled_cache) {

@@ -1,4 +1,6 @@
 #include "cache.h"
+#include "dram_controller.h"
+#include <iomanip>
 
 // initialize replacement state
 void CACHE::llc_initialize_replacement()
@@ -51,23 +53,39 @@ void CACHE::llc_replacement_final_stats()
 {
     cout << endl;
     cout << "===========================================================" << endl;
-    cout << "              LLC Misses by Memory Area (LRU)         " << endl;
+    cout << "     LLC Access & Miss by Memory Area (LRU)           " << endl;
     cout << "===========================================================" << endl;
-    
-    // 直接使用 llc_miss_by_area，因为它属于当前的 CACHE 对象
-    cout << "Local DRAM (Area 0) Misses : " << llc_miss_by_area[0] << endl;
-    cout << "NUMA Node  (Area 1) Misses : " << llc_miss_by_area[1] << endl;
-    cout << "CXL Node   (Area 2) Misses : " << llc_miss_by_area[2] << endl;
-    
-    uint64_t total_custom_misses = llc_miss_by_area[0] + llc_miss_by_area[1] + llc_miss_by_area[2];
-                                   
-    cout << "-----------------------------------------------------------" << endl;
-    cout << "Total Tracked Area Misses  : " << total_custom_misses << endl;
 
-    uint64_t total_custom_miss_times = llc_miss_by_area[0] * 100 + (llc_miss_by_area[1] + llc_miss_by_area[2]) * 300;
+    const char* area_names[] = {"Local DRAM (Area 0)", "NUMA Node  (Area 1)", "CXL Node   (Area 2)"};
+    uint64_t total_access = 0, total_miss = 0;
 
+    for (int a = 0; a < 3; a++) {
+        uint64_t access = llc_access_by_area[a];
+        uint64_t miss   = llc_miss_by_area[a];
+        double miss_rate = (access > 0) ? (100.0 * miss / access) : 0.0;
+
+        cout << area_names[a] << ":" << endl;
+        cout << "    Access: " << setw(12) << access
+             << "  Miss: " << setw(12) << miss
+             << "  Miss Rate: " << fixed << setprecision(2) << setw(7) << miss_rate << "%" << endl;
+
+        total_access += access;
+        total_miss   += miss;
+    }
+
+    double total_miss_rate = (total_access > 0) ? (100.0 * total_miss / total_access) : 0.0;
     cout << "-----------------------------------------------------------" << endl;
-    cout << "Total Tracked Area Miss Times  : " << total_custom_miss_times << endl;
+    cout << "Total                    Access: " << setw(12) << total_access
+         << "  Miss: " << setw(12) << total_miss
+         << "  Miss Rate: " << fixed << setprecision(2) << setw(7) << total_miss_rate << "%" << endl;
+
+    // Use actual framework DRAM/CXL timing parameters for weighted miss latency
+    uint64_t dram_miss_lat = tRP + tRCD + tCAS + DRAM_DBUS_RETURN_TIME;
+    uint64_t cxl_miss_lat = tRP_CXL + tRCD_CXL + tCAS_CXL + CXL_DBUS_RETURN_TIME;
+    uint64_t total_miss_times = llc_miss_by_area[0] * dram_miss_lat
+                              + (llc_miss_by_area[1] + llc_miss_by_area[2]) * cxl_miss_lat;
+    cout << "-----------------------------------------------------------" << endl;
+    cout << "Total Estimated Miss Latency Cost : " << total_miss_times << endl;
 
     cout << "===========================================================" << endl;
     cout << endl;

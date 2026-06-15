@@ -12,10 +12,18 @@
 #define tRCD_DRAM_NANOSECONDS 6.0
 #define tCAS_DRAM_NANOSECONDS 6.0
 
+// CXL-side DRAM timing (slower remote DIMM, ~2.7x DRAM)
+#define tRP_CXL_NANOSECONDS 20.0
+#define tRCD_CXL_NANOSECONDS 20.0
+#define tCAS_CXL_NANOSECONDS 20.0
+
 // the data bus must wait this amount of time when switching between reads and
 // writes, and vice versa
 #define DRAM_DBUS_TURN_AROUND_TIME ((15 * CPU_FREQ) / 2000) // 7.5 ns
+#define CXL_DBUS_TURN_AROUND_TIME ((15 * CPU_FREQ) / 2000)  // 7.5 ns
 extern uint32_t DRAM_MTPS, DRAM_DBUS_RETURN_TIME;
+extern uint32_t CXL_MTPS, CXL_DBUS_RETURN_TIME;
+extern uint32_t tRP_CXL, tRCD_CXL, tCAS_CXL;
 
 // these values control when to send out a burst of writes
 #define DRAM_WRITE_HIGH_WM ((DRAM_WQ_SIZE * 7) >> 3) // 7/8th
@@ -26,6 +34,7 @@ extern uint32_t DRAM_MTPS, DRAM_DBUS_RETURN_TIME;
 class MEMORY_CONTROLLER : public MEMORY {
 public:
   const string NAME;
+  bool is_cxl;  // true if this controller models CXL memory
 
   DRAM_ARRAY dram_array[DRAM_CHANNELS][DRAM_RANKS][DRAM_BANKS];
   uint64_t dbus_cycle_available[DRAM_CHANNELS],
@@ -44,6 +53,7 @@ public:
 
   // constructor
   MEMORY_CONTROLLER(string v1) : NAME(v1) {
+    is_cxl = false;
     for (uint32_t i = 0; i < NUM_TYPES + 1; i++) {
       for (uint32_t j = 0; j < NUM_TYPES + 1; j++) {
         dbus_congested[i][j] = 0;

@@ -203,6 +203,36 @@ void print_dram_stats() {
          << endl;
   else
     cout << " AVG_CONGESTED_CYCLE: -" << endl;
+
+  // CXL Memory Statistics
+  cout << endl;
+  cout << "CXL Memory Statistics" << endl;
+  for (uint32_t i = 0; i < DRAM_CHANNELS; i++) {
+    cout << " CHANNEL " << i << endl;
+    cout << " RQ ROW_BUFFER_HIT: " << setw(10)
+         << uncore.CXL_MEM.RQ[i].ROW_BUFFER_HIT
+         << "  ROW_BUFFER_MISS: " << setw(10)
+         << uncore.CXL_MEM.RQ[i].ROW_BUFFER_MISS << endl;
+    cout << " DBUS_CONGESTED: " << setw(10)
+         << uncore.CXL_MEM.dbus_congested[NUM_TYPES][NUM_TYPES] << endl;
+    cout << " WQ ROW_BUFFER_HIT: " << setw(10)
+         << uncore.CXL_MEM.WQ[i].ROW_BUFFER_HIT
+         << "  ROW_BUFFER_MISS: " << setw(10)
+         << uncore.CXL_MEM.WQ[i].ROW_BUFFER_MISS;
+    cout << "  FULL: " << setw(10) << uncore.CXL_MEM.WQ[i].FULL << endl;
+    cout << endl;
+  }
+
+  uint64_t cxl_congested_cycle = 0;
+  for (uint32_t i = 0; i < DRAM_CHANNELS; i++)
+    cxl_congested_cycle += uncore.CXL_MEM.dbus_cycle_congested[i];
+  if (uncore.CXL_MEM.dbus_congested[NUM_TYPES][NUM_TYPES])
+    cout << " CXL AVG_CONGESTED_CYCLE: "
+         << (cxl_congested_cycle /
+             uncore.CXL_MEM.dbus_congested[NUM_TYPES][NUM_TYPES])
+         << endl;
+  else
+    cout << " CXL AVG_CONGESTED_CYCLE: -" << endl;
 }
 
 void reset_cache_stats(uint32_t cpu, CACHE *cache) {
@@ -300,6 +330,10 @@ void finish_warmup() {
     reset_cache_stats(i, &ooo_cpu[i].L2C);
     reset_cache_stats(i, &uncore.LLC);
   }
+  for (int a = 0; a < 3; a++) {
+    uncore.LLC.llc_miss_by_area[a] = 0;
+    uncore.LLC.llc_access_by_area[a] = 0;
+  }
   cout << endl;
 
   // reset DRAM stats
@@ -308,6 +342,14 @@ void finish_warmup() {
     uncore.DRAM.RQ[i].ROW_BUFFER_MISS = 0;
     uncore.DRAM.WQ[i].ROW_BUFFER_HIT = 0;
     uncore.DRAM.WQ[i].ROW_BUFFER_MISS = 0;
+  }
+
+  // reset CXL stats
+  for (uint32_t i = 0; i < DRAM_CHANNELS; i++) {
+    uncore.CXL_MEM.RQ[i].ROW_BUFFER_HIT = 0;
+    uncore.CXL_MEM.RQ[i].ROW_BUFFER_MISS = 0;
+    uncore.CXL_MEM.WQ[i].ROW_BUFFER_HIT = 0;
+    uncore.CXL_MEM.WQ[i].ROW_BUFFER_MISS = 0;
   }
 
   // set actual cache latency
@@ -489,6 +531,25 @@ int main(int argc, char **argv) {
          "MT/s\n",
          DRAM_SIZE, DRAM_CHANNELS, 8 * DRAM_CHANNEL_WIDTH, DRAM_MTPS);
 
+  // CXL memory timing initialization
+  if (knob_low_bandwidth)
+    CXL_MTPS = CXL_IO_FREQ / 4;
+  else
+    CXL_MTPS = CXL_IO_FREQ;
+
+  // CXL-side DRAM timing (slower remote DIMM, ~2x DRAM timing)
+  tRP_CXL = (uint32_t)((1.0 * tRP_CXL_NANOSECONDS * CPU_FREQ) / 1000);
+  tRCD_CXL = (uint32_t)((1.0 * tRCD_CXL_NANOSECONDS * CPU_FREQ) / 1000);
+  tCAS_CXL = (uint32_t)((1.0 * tCAS_CXL_NANOSECONDS * CPU_FREQ) / 1000);
+
+  // CXL data bus return time (longer due to lower CXL bandwidth)
+  CXL_DBUS_RETURN_TIME =
+      (BLOCK_SIZE / CXL_CHANNEL_WIDTH) * (CPU_FREQ / CXL_MTPS);
+
+  printf("CXL Memory Size: %u MB Channels: %u Width: %u-bit Data Rate: %u "
+         "MT/s\n",
+         CXL_SIZE, CXL_CHANNELS, 8 * CXL_CHANNEL_WIDTH, CXL_MTPS);
+
   // end consequence of knobs
 
   // search through the argv for "-traces"
@@ -616,6 +677,7 @@ int main(int argc, char **argv) {
     uncore.LLC.upper_level_icache[i] = &ooo_cpu[i].L2C;
     uncore.LLC.upper_level_dcache[i] = &ooo_cpu[i].L2C;
     uncore.LLC.lower_level = &uncore.DRAM;
+    uncore.LLC.lower_level_cxl = &uncore.CXL_MEM;
 
     // OFF-CHIP DRAM
     uncore.DRAM.fill_level = FILL_DRAM;
@@ -624,6 +686,16 @@ int main(int argc, char **argv) {
     for (uint32_t i = 0; i < DRAM_CHANNELS; i++) {
       uncore.DRAM.RQ[i].is_RQ = 1;
       uncore.DRAM.WQ[i].is_WQ = 1;
+    }
+
+    // CXL MEMORY
+    uncore.CXL_MEM.is_cxl = true;
+    uncore.CXL_MEM.fill_level = FILL_DRAM;
+    uncore.CXL_MEM.upper_level_icache[i] = &uncore.LLC;
+    uncore.CXL_MEM.upper_level_dcache[i] = &uncore.LLC;
+    for (uint32_t i = 0; i < DRAM_CHANNELS; i++) {
+      uncore.CXL_MEM.RQ[i].is_RQ = 1;
+      uncore.CXL_MEM.WQ[i].is_WQ = 1;
     }
 
     warmup_complete[i] = 0;
@@ -794,6 +866,7 @@ int main(int argc, char **argv) {
 
     // TODO: should it be backward?
     uncore.DRAM.operate();
+    uncore.CXL_MEM.operate();
     uncore.LLC.operate();
   }
 
@@ -918,6 +991,13 @@ int main(int argc, char **argv) {
 
 #ifndef CRC2_COMPILE
   uncore.LLC.llc_replacement_final_stats();
+  cout << endl << "LLC Miss Distribution by Area:" << endl;
+  cout << "  Area 0 (DRAM): " << uncore.LLC.llc_miss_by_area[0]
+       << " misses, " << uncore.LLC.llc_access_by_area[0] << " accesses" << endl;
+  cout << "  Area 1 (NUMA): " << uncore.LLC.llc_miss_by_area[1]
+       << " misses, " << uncore.LLC.llc_access_by_area[1] << " accesses" << endl;
+  cout << "  Area 2 (CXL):  " << uncore.LLC.llc_miss_by_area[2]
+       << " misses, " << uncore.LLC.llc_access_by_area[2] << " accesses" << endl;
   print_dram_stats();
   print_branch_stats();
 #endif

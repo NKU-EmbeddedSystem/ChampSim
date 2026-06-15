@@ -3,6 +3,7 @@
 
 // initialized in main.cc
 uint32_t DRAM_MTPS, DRAM_DBUS_RETURN_TIME, tRP, tRCD, tCAS;
+uint32_t CXL_MTPS, CXL_DBUS_RETURN_TIME, tRP_CXL, tRCD_CXL, tCAS_CXL;
 
 void MEMORY_CONTROLLER::reset_remain_requests(PACKET_QUEUE *queue,
                                               uint32_t channel) {
@@ -20,7 +21,8 @@ void MEMORY_CONTROLLER::reset_remain_requests(PACKET_QUEUE *queue,
 #endif
 
       // update open row
-      if ((bank_request[op_channel][op_rank][op_bank].cycle_available - tCAS) <=
+      uint32_t my_tCAS = is_cxl ? tCAS_CXL : tCAS;
+      if ((bank_request[op_channel][op_rank][op_bank].cycle_available - my_tCAS) <=
           current_core_cycle[op_cpu])
         bank_request[op_channel][op_rank][op_bank].open_row = op_row;
       else
@@ -79,7 +81,8 @@ void MEMORY_CONTROLLER::operate() {
       // reset scheduled RQ requests
       reset_remain_requests(&RQ[i], i);
       // add data bus turn-around time
-      dbus_cycle_available[i] += DRAM_DBUS_TURN_AROUND_TIME;
+      dbus_cycle_available[i] +=
+          (is_cxl ? CXL_DBUS_TURN_AROUND_TIME : DRAM_DBUS_TURN_AROUND_TIME);
     } else if (write_mode[i]) {
 
       if (WQ[i].occupancy == 0)
@@ -91,7 +94,8 @@ void MEMORY_CONTROLLER::operate() {
         // reset scheduled WQ requests
         reset_remain_requests(&WQ[i], i);
         // add data bus turnaround time
-        dbus_cycle_available[i] += DRAM_DBUS_TURN_AROUND_TIME;
+        dbus_cycle_available[i] +=
+            (is_cxl ? CXL_DBUS_TURN_AROUND_TIME : DRAM_DBUS_TURN_AROUND_TIME);
       }
     }
 
@@ -245,22 +249,21 @@ void MEMORY_CONTROLLER::schedule(PACKET_QUEUE *queue) {
 
     uint64_t CXL_EXTRA_LATENCY = 0;
 
-    // 判断是否为 CXL 区域（根据你的逻辑 area 1 或 2）
-    if (queue->entry[oldest_index].area == 1 ||
-        queue->entry[oldest_index].area == 2) {
-      if (queue->is_WQ) {
-        CXL_EXTRA_LATENCY = 600; // 写延迟相对低一点（异步确认）
-      } else {
-        CXL_EXTRA_LATENCY = 800; // 读延迟高（同步等待）
-      }
-    }
-
     // 2. 计算 DRAM 颗粒层面的时序延迟
     uint64_t DRAM_LATENCY = 0;
-    if (row_buffer_hit)
-      DRAM_LATENCY = tCAS;
-    else
-      DRAM_LATENCY = tRP + tRCD + tCAS;
+    if (is_cxl) {
+      // CXL-side memory uses its own timing parameters
+      if (row_buffer_hit)
+        DRAM_LATENCY = tCAS_CXL;
+      else
+        DRAM_LATENCY = tRP_CXL + tRCD_CXL + tCAS_CXL;
+    } else {
+      // Local DRAM timing
+      if (row_buffer_hit)
+        DRAM_LATENCY = tCAS;
+      else
+        DRAM_LATENCY = tRP + tRCD + tCAS;
+    }
 
     // 3. 总延迟 = 颗粒延迟 + CXL 控制器/链路延迟
     uint64_t TOTAL_LATENCY = DRAM_LATENCY + CXL_EXTRA_LATENCY;
@@ -353,10 +356,13 @@ void MEMORY_CONTROLLER::process(PACKET_QUEUE *queue) {
     // check if data bus is available
     if (dbus_cycle_available[op_channel] <= current_core_cycle[op_cpu]) {
 
+      uint32_t dbus_return_time =
+          is_cxl ? CXL_DBUS_RETURN_TIME : DRAM_DBUS_RETURN_TIME;
+
       if (queue->is_WQ) {
         // update data bus cycle time
         dbus_cycle_available[op_channel] =
-            current_core_cycle[op_cpu] + DRAM_DBUS_RETURN_TIME;
+            current_core_cycle[op_cpu] + dbus_return_time;
 
         if (bank_request[op_channel][op_rank][op_bank].row_buffer_hit)
           queue->ROW_BUFFER_HIT++;
@@ -374,20 +380,9 @@ void MEMORY_CONTROLLER::process(PACKET_QUEUE *queue) {
       } else {
         // update data bus cycle time
         dbus_cycle_available[op_channel] =
-            current_core_cycle[op_cpu] + DRAM_DBUS_RETURN_TIME;
+            current_core_cycle[op_cpu] + dbus_return_time;
         queue->entry[request_index].event_cycle =
             dbus_cycle_available[op_channel];
-
-        // ==================== 【新增代码：注入 CXL/NUMA 延迟】
-        // ====================
-        // uint64_t extra_delay = 0;
-        // if (queue->entry[request_index].area == 1) { // CXL 多200ns
-        //   extra_delay = 200;
-        // } else if (queue->entry[request_index].area == 2) { // CXL
-        //   extra_delay = 200; // CXL 额外多 250 cycles
-        // }
-        // queue->entry[request_index].event_cycle += extra_delay;
-        // =========================================================================
 
         DP(if (warmup_complete[op_cpu]) {
           cout << "[" << queue->NAME << "] " << __func__ << " return data"
@@ -518,18 +513,6 @@ int MEMORY_CONTROLLER::add_rq(PACKET *packet) {
     // if (packet->fill_level < fill_level) {
 
     packet->data = WQ[channel].entry[wq_index].data;
-
-    // ==================== 【新增代码：注入 CXL/NUMA 延迟】
-    // ====================
-    // uint64_t extra_delay = 0;
-    // if (packet->area == 1) {
-    //   extra_delay = 200;
-    // } else if (packet->area == 2) {
-    //   extra_delay = 200;
-    // }
-    // // MSHR 会根据 packet->event_cycle 决定什么时候唤醒 CPU
-    // packet->event_cycle = current_core_cycle[packet->cpu] + extra_delay;
-    // =========================================================================
 
     if (packet->instruction)
       upper_level_icache[packet->cpu]->return_data(packet);

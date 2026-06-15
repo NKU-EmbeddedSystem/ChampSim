@@ -104,6 +104,9 @@ public:
   uint64_t llc_miss_by_area[3];
   uint64_t llc_access_by_area[3];  // total LLC accesses per memory area
 
+  // CXL memory path (used by LLC to route CXL requests)
+  MEMORY *lower_level_cxl;
+
   // queues
   PACKET_QUEUE WQ{NAME + "_WQ", WQ_SIZE}, // write queue
       RQ{NAME + "_RQ", RQ_SIZE},          // read queue
@@ -153,6 +156,7 @@ public:
     total_miss_latency = 0;
 
     lower_level = NULL;
+    lower_level_cxl = NULL;
     extra_interface = NULL;
     fill_level = -1;
     MAX_READ = MAX_READ_PER_CYCLE;
@@ -193,6 +197,13 @@ public:
                        uint32_t prefetch_metadata);
 
   void handle_fill(), handle_writeback(), handle_read(), handle_prefetch();
+
+  // Resolve the correct lower-level memory controller based on area
+  MEMORY *get_lower_level_by_area(int area) {
+    if (cache_type == IS_LLC && lower_level_cxl && (area == 1 || area == 2))
+      return lower_level_cxl;
+    return lower_level;
+  }
 
   void add_mshr(PACKET *packet), update_fill_cycle(),
       llc_initialize_replacement(),

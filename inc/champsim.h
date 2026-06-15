@@ -38,6 +38,7 @@
 #define NUM_CPUS 1
 #define CPU_FREQ 4000
 #define DRAM_IO_FREQ 3200
+#define CXL_IO_FREQ 200   // CXL effective MT/s, 1/4 of DRAM for bandwidth modeling
 #define PAGE_SIZE 4096
 #define LOG2_PAGE_SIZE 12
 
@@ -74,6 +75,16 @@
 #define DRAM_SIZE                                                              \
   (DRAM_CHANNELS * DRAM_RANKS * DRAM_BANKS * DRAM_ROWS * DRAM_ROW_SIZE / 1024)
 #define DRAM_PAGES ((DRAM_SIZE << 10) >> 2)
+
+// CXL memory geometry (independent from DRAM, same size for now)
+#define CXL_CHANNELS 1
+#define CXL_RANKS 1
+#define CXL_BANKS 32
+#define CXL_ROWS 65536
+#define CXL_COLUMNS 128
+#define CXL_CHANNEL_WIDTH 8
+#define CXL_ROW_SIZE (BLOCK_SIZE * CXL_COLUMNS / 1024)
+#define CXL_SIZE (CXL_CHANNELS * CXL_RANKS * CXL_BANKS * CXL_ROWS * CXL_ROW_SIZE / 1024)
 // #define DRAM_PAGES 10
 
 using namespace std;

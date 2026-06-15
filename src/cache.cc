@@ -119,12 +119,17 @@ void CACHE::handle_fill() {
           // check if the lower level WQ has enough room to keep this writeback
           // request
           if (lower_level) {
-            if (lower_level->get_occupancy(2, block[set][way].address) ==
-                lower_level->get_size(2, block[set][way].address)) {
+            int victim_area =
+                MemoryMapper::get_instance().get_assigned_area(
+                    block[set][way].full_addr, false);
+            MEMORY *target_lower = get_lower_level_by_area(victim_area);
+
+            if (target_lower->get_occupancy(2, block[set][way].address) ==
+                target_lower->get_size(2, block[set][way].address)) {
 
               // lower level WQ is full, cannot replace this victim
               do_fill = 0;
-              lower_level->increment_WQ_FULL(block[set][way].address);
+              target_lower->increment_WQ_FULL(block[set][way].address);
               STALL[MSHR.entry[mshr_index].type]++;
 
               DP(if (warmup_complete[fill_cpu]) {
@@ -147,7 +152,7 @@ void CACHE::handle_fill() {
               writeback_packet.type = WRITEBACK;
               writeback_packet.event_cycle = current_core_cycle[fill_cpu];
 
-              lower_level->add_wq(&writeback_packet);
+              target_lower->add_wq(&writeback_packet);
             }
           }
 #ifdef SANITY_CHECK
@@ -404,13 +409,15 @@ void CACHE::handle_writeback() {
                      (MSHR.occupancy < MSHR_SIZE)) { // this is a new miss
 
             if (cache_type == IS_LLC) {
-              // check to make sure the DRAM RQ has room for this LLC RFO miss
-              if (lower_level->get_occupancy(1, WQ.entry[index].address) ==
-                  lower_level->get_size(1, WQ.entry[index].address)) {
+              MEMORY *target_lower =
+                  get_lower_level_by_area(WQ.entry[index].area);
+              // check to make sure the target memory RQ has room for this LLC RFO miss
+              if (target_lower->get_occupancy(1, WQ.entry[index].address) ==
+                  target_lower->get_size(1, WQ.entry[index].address)) {
                 miss_handled = 0;
               } else {
                 add_mshr(&WQ.entry[index]);
-                lower_level->add_rq(&WQ.entry[index]);
+                target_lower->add_rq(&WQ.entry[index]);
               }
             } else {
               // add it to mshr (RFO miss)
@@ -511,12 +518,17 @@ void CACHE::handle_writeback() {
             // check if the lower level WQ has enough room to keep this
             // writeback request
             if (lower_level) {
-              if (lower_level->get_occupancy(2, block[set][way].address) ==
-                  lower_level->get_size(2, block[set][way].address)) {
+              int victim_area =
+                  MemoryMapper::get_instance().get_assigned_area(
+                      block[set][way].full_addr, false);
+              MEMORY *target_lower = get_lower_level_by_area(victim_area);
+
+              if (target_lower->get_occupancy(2, block[set][way].address) ==
+                  target_lower->get_size(2, block[set][way].address)) {
 
                 // lower level WQ is full, cannot replace this victim
                 do_fill = 0;
-                lower_level->increment_WQ_FULL(block[set][way].address);
+                target_lower->increment_WQ_FULL(block[set][way].address);
                 STALL[WQ.entry[index].type]++;
 
                 DP(if (warmup_complete[writeback_cpu]) {
@@ -541,7 +553,7 @@ void CACHE::handle_writeback() {
                 writeback_packet.event_cycle =
                     current_core_cycle[writeback_cpu];
 
-                lower_level->add_wq(&writeback_packet);
+                target_lower->add_wq(&writeback_packet);
               }
             }
 #ifdef SANITY_CHECK
@@ -792,14 +804,16 @@ void CACHE::handle_read() {
                    (MSHR.occupancy < MSHR_SIZE)) { // this is a new miss
 
           if (cache_type == IS_LLC) {
-            // check to make sure the DRAM RQ has room for this LLC read miss
-            if (lower_level->get_occupancy(1, RQ.entry[index].address) ==
-                lower_level->get_size(1, RQ.entry[index].address)) {
+            MEMORY *target_lower =
+                get_lower_level_by_area(RQ.entry[index].area);
+            // check to make sure the target memory RQ has room for this LLC read miss
+            if (target_lower->get_occupancy(1, RQ.entry[index].address) ==
+                target_lower->get_size(1, RQ.entry[index].address)) {
               miss_handled = 0;
             } else {
               add_mshr(&RQ.entry[index]);
-              if (lower_level) {
-                lower_level->add_rq(&RQ.entry[index]);
+              if (target_lower) {
+                target_lower->add_rq(&RQ.entry[index]);
               }
             }
           } else {
@@ -1117,8 +1131,10 @@ void CACHE::handle_prefetch() {
           // of caches
           if (lower_level) {
             if (cache_type == IS_LLC) {
-              if (lower_level->get_occupancy(1, PQ.entry[index].address) ==
-                  lower_level->get_size(1, PQ.entry[index].address))
+              MEMORY *target_lower =
+                  get_lower_level_by_area(PQ.entry[index].area);
+              if (target_lower->get_occupancy(1, PQ.entry[index].address) ==
+                  target_lower->get_size(1, PQ.entry[index].address))
                 miss_handled = 0;
               else {
 
@@ -1140,7 +1156,7 @@ void CACHE::handle_prefetch() {
                 if (PQ.entry[index].fill_level <= fill_level)
                   add_mshr(&PQ.entry[index]);
 
-                lower_level->add_rq(&PQ.entry[index]); // add it to the DRAM RQ
+                target_lower->add_rq(&PQ.entry[index]); // add it to the CXL/DRAM RQ
               }
             } else {
               if (lower_level->get_occupancy(3, PQ.entry[index].address) ==
