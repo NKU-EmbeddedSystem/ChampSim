@@ -149,6 +149,7 @@ void CACHE::handle_fill() {
               writeback_packet.instr_id = MSHR.entry[mshr_index].instr_id;
               writeback_packet.ip = 0; // writeback does not have ip
               writeback_packet.type = WRITEBACK;
+              writeback_packet.area = block[set][way].area;
               writeback_packet.event_cycle = current_core_cycle[fill_cpu];
 
               target_lower->add_wq(&writeback_packet);
@@ -557,6 +558,7 @@ void CACHE::handle_writeback() {
                 writeback_packet.instr_id = WQ.entry[index].instr_id;
                 writeback_packet.ip = 0;
                 writeback_packet.type = WRITEBACK;
+                writeback_packet.area = block[set][way].area;
                 writeback_packet.event_cycle =
                     current_core_cycle[writeback_cpu];
 
@@ -1875,6 +1877,11 @@ void CACHE::va_translate_prefetches() {
 }
 
 int CACHE::add_pq(PACKET *packet) {
+  if (packet->area < 0) {
+    uint64_t _al = packet->full_v_addr ? packet->full_v_addr : packet->full_addr;
+    packet->area = MemoryMapper::get_instance().get_assigned_area(_al, true);
+  }
+
   // check for the latest wirtebacks in the write queue
   int wq_index = WQ.check_queue(packet);
   if (wq_index != -1) {
