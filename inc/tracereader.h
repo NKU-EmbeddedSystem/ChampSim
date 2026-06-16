@@ -18,6 +18,7 @@ class tracereader
         ~tracereader();
         void open(std::string trace_string);
         void close();
+        std::string get_trace_path() const { return trace_string; }
 
         template<typename T>
         ooo_model_instr read_single_instr();
