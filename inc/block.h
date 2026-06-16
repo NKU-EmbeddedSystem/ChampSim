@@ -10,7 +10,7 @@ class BLOCK {
 public:
   uint8_t valid, prefetch, dirty, used;
 
-  int delta, depth, signature, confidence;
+  int delta, depth, signature, confidence, area;
 
   uint64_t address, full_addr, v_address, full_v_addr, tag, data, ip, cpu,
       instr_id;
@@ -28,6 +28,7 @@ public:
     depth = 0;
     signature = 0;
     confidence = 0;
+    area = -1;
 
     address = 0;
     full_addr = 0;

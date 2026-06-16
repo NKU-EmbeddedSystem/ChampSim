@@ -102,7 +102,9 @@ public:
   uint64_t pf_requested, pf_issued, pf_useful, pf_useless, pf_fill;
 
   uint64_t llc_miss_by_area[3];
-  uint64_t llc_access_by_area[3];  // total LLC accesses per memory area
+  uint64_t llc_access_by_area[3];
+  uint64_t sim_dram_accesses = 0, sim_cxl_accesses = 0;
+  uint64_t sim_dram_evictions = 0, sim_cxl_evictions = 0;  // total LLC accesses per memory area
 
   // CXL memory path (used by LLC to route CXL requests)
   MEMORY *lower_level_cxl;
@@ -214,7 +216,7 @@ public:
       llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way,
                                    uint64_t full_addr, uint64_t ip,
                                    uint64_t victim_addr, uint32_t type,
-                                   uint8_t hit),
+                                   uint8_t hit, int area = 0),
       lru_update(uint32_t set, uint32_t way),
       fill_cache(uint32_t set, uint32_t way, PACKET *packet),
       replacement_final_stats(), llc_replacement_final_stats(),
@@ -257,7 +259,7 @@ public:
                   uint32_t type),
       llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
                       const BLOCK *current_set, uint64_t ip, uint64_t full_addr,
-                      uint32_t type),
+                      uint32_t type, int area = 0),
       lru_victim(uint32_t cpu, uint64_t instr_id, uint32_t set,
                  const BLOCK *current_set, uint64_t ip, uint64_t full_addr,
                  uint32_t type);

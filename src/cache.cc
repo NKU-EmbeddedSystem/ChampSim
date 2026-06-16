@@ -34,7 +34,8 @@ void CACHE::handle_fill() {
         way = llc_find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set,
                               block[set], MSHR.entry[mshr_index].ip,
                               MSHR.entry[mshr_index].full_addr,
-                              MSHR.entry[mshr_index].type);
+                              MSHR.entry[mshr_index].type,
+                              MSHR.entry[mshr_index].area);
       } else
         way = find_victim(fill_cpu, MSHR.entry[mshr_index].instr_id, set,
                           block[set], MSHR.entry[mshr_index].ip,
@@ -49,7 +50,7 @@ void CACHE::handle_fill() {
         if (cache_type == IS_LLC) {
           llc_update_replacement_state(
               fill_cpu, set, way, MSHR.entry[mshr_index].full_addr,
-              MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0);
+              MSHR.entry[mshr_index].ip, 0, MSHR.entry[mshr_index].type, 0, MSHR.entry[mshr_index].area);
 
         } else
           update_replacement_state(
@@ -119,9 +120,7 @@ void CACHE::handle_fill() {
           // check if the lower level WQ has enough room to keep this writeback
           // request
           if (lower_level) {
-            int victim_area =
-                MemoryMapper::get_instance().get_assigned_area(
-                    block[set][way].full_addr, false);
+            int victim_area = block[set][way].area;  // from L1 via fill_cache
             MEMORY *target_lower = get_lower_level_by_area(victim_area);
 
             if (target_lower->get_occupancy(2, block[set][way].address) ==
@@ -162,6 +161,14 @@ void CACHE::handle_fill() {
               assert(0);
           }
 #endif
+        }
+
+        // Per-area eviction tracking (sim phase, LLC only)
+        if (do_fill && this->cache_type == IS_LLC && warmup_complete[fill_cpu] &&
+            !simulation_complete[fill_cpu]) {
+          int ev_area = block[set][way].area;
+          if (ev_area == 0) sim_dram_evictions++;
+          else if (ev_area > 0) sim_cxl_evictions++;
         }
 
         if (do_fill) {
@@ -497,7 +504,8 @@ void CACHE::handle_writeback() {
             way = llc_find_victim(writeback_cpu, WQ.entry[index].instr_id, set,
                                   block[set], WQ.entry[index].ip,
                                   WQ.entry[index].full_addr,
-                                  WQ.entry[index].type);
+                                  WQ.entry[index].type,
+                                  WQ.entry[index].area);
           } else
             way = find_victim(writeback_cpu, WQ.entry[index].instr_id, set,
                               block[set], WQ.entry[index].ip,
@@ -518,9 +526,7 @@ void CACHE::handle_writeback() {
             // check if the lower level WQ has enough room to keep this
             // writeback request
             if (lower_level) {
-              int victim_area =
-                  MemoryMapper::get_instance().get_assigned_area(
-                      block[set][way].full_addr, false);
+              int victim_area = block[set][way].area;  // from L1 via fill_cache
               MEMORY *target_lower = get_lower_level_by_area(victim_area);
 
               if (target_lower->get_occupancy(2, block[set][way].address) ==
@@ -1338,6 +1344,7 @@ void CACHE::fill_cache(uint32_t set, uint32_t way, PACKET *packet) {
   block[set][way].ip = packet->ip;
   block[set][way].cpu = packet->cpu;
   block[set][way].instr_id = packet->instr_id;
+  block[set][way].area = packet->area;
 
   DP(if (warmup_complete[packet->cpu]) {
     cout << "[" << NAME << "] " << __func__ << " set: " << set
@@ -1431,8 +1438,9 @@ int CACHE::add_rq(PACKET *packet) {
       this->cache_type == IS_ITLB || this->cache_type == IS_DTLB) {
 
     // 【注意】必须使用 full_addr，绝不能使用 address！
+    uint64_t _al = packet->full_v_addr ? packet->full_v_addr : packet->full_addr;
     packet->area =
-        MemoryMapper::get_instance().get_assigned_area(packet->full_addr, true);
+        MemoryMapper::get_instance().get_assigned_area(_al, true);
   }
   // ========================================================================
 
@@ -1594,6 +1602,18 @@ int CACHE::add_rq(PACKET *packet) {
   RQ.TO_CACHE++;
   RQ.ACCESS++;
 
+  // Per-area access tracking (sim phase, LLC)
+  if (this->cache_type == IS_LLC) {
+    uint32_t cpu = packet->cpu;
+    if (warmup_complete[cpu] && !simulation_complete[cpu]) {
+      int area = packet->area;
+      if (area == 0) sim_dram_accesses++;
+      else if (area > 0) sim_cxl_accesses++;
+    }
+    static int dbg = 0;
+    if (dbg < 5) { std::cerr << "[DBG-LLC] packet->area=" << packet->area << " full_v_addr=0x" << std::hex << packet->full_v_addr << std::dec << "\n"; dbg++; }
+  }
+
   return -1;
 }
 
@@ -1602,8 +1622,9 @@ int CACHE::add_wq(PACKET *packet) {
   // ==================== 【新增代码：全局拦截介质分配】 ====================
   if (this->cache_type == IS_L1D || this->cache_type == IS_DTLB) {
     // 【注意】必须使用 full_addr！
+    uint64_t _al = packet->full_v_addr ? packet->full_v_addr : packet->full_addr;
     packet->area =
-        MemoryMapper::get_instance().get_assigned_area(packet->full_addr, true);
+        MemoryMapper::get_instance().get_assigned_area(_al, true);
   }
   // ========================================================================
 
