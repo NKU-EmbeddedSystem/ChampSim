@@ -49,13 +49,14 @@
 | `inc/block.h` | BLOCK 加 `int area` 字段，初始化 -1 | ✅ |
 | `inc/cache.h` | `llc_find_victim`/`llc_update_replacement_state` 加 `int area = 0` 参数 | ✅ |
 | `inc/cache.h` | 加 `sim_dram_accesses`, `sim_cxl_accesses`, `sim_dram_evictions`, `sim_cxl_evictions` 字段 | ✅ |
-| `inc/memory_mapper.h` | 加 `load_area_map()`, `area_map_4k`, 4KB/2MB 粒度双模式 | ✅ |
+| `inc/memory_mapper.h` | 加 `load_area_map()`, `area_map_4k`, `set_page_area()`；支持 migration 写回 live area map | ✅ |
 | `inc/page_migration.h` | PageMigrationEngine 定义（forward/backward/lazy 模式） | ✅ |
-| `inc/trace_page_buffer.h` | TracePageBuffer 类（forward migration 的 lookahead） | ✅ |
+| `inc/trace_page_buffer.h` | TracePageBuffer 类（forward migration 的 lookahead），支持 warmup skip 对齐 | ✅ |
 | `inc/tracereader.h` | 加 `get_trace_path()` 方法 | ✅ |
 | `src/cache.cc` | L1 area 赋值用 `full_v_addr`（VA）；fill_cache 写 `block.area`；handle_fill 传 area 到 replacement；writeback 路由用 `block.area` | ✅ |
-| `src/page_migration.cc` | PageMigrationEngine 实现 | ✅ |
-| `src/main.cc` | CLI args: `-area_map`, `-migration`, `-dram_pages`；init MemoryMapper + PageMigrationEngine + TracePageBuffer；main loop 触发 forceMigrate；per-area 统计输出 | ✅ |
+| `src/page_migration.cc` | PageMigrationEngine 实现；migration 后写回 MemoryMapper | ✅ |
+| `src/main.cc` | CLI args: `-area_map`, `-migration`, `-dram_pages`；init MemoryMapper + PageMigrationEngine + TracePageBuffer；ROI 起点触发 forward lookahead migration；per-area 统计输出 | ✅ |
+| `src/ooo_cpu.cc` | trace data-memory stream 喂给 PageMigrationEngine；warmup 阶段对齐 forward buffer，ROI 阶段记录 heat 并触发 interval migration | ✅ |
 | `replacement/rpp.llc_repl` | `llc_find_victim` 用 `area` 参数代替重新查 get_assigned_area；victim area 用 `block[].area` | ✅ |
 | `replacement/mockingjay.llc_repl` | 同上 + sampled_cache null guard | ✅ |
 | `replacement/lru.llc_repl` | 函数签名加 `int area` 参数 | ✅ |
@@ -76,7 +77,6 @@ cp bin/champsim bin/hp-<l1d>-<l2d>-no-<pol>-1core
   -warmup_instructions 50000000 \
   -simulation_instructions 100000000 \
   -a artifacts/runs/task3.1-gen-areamaps/latest/omnetpp_sort_heat.amap \
-  -dram_pages 5384 \
   -traces trace/omnetpp_4B.trace.xz
 ```
 
@@ -94,8 +94,8 @@ cp bin/champsim bin/hp-<l1d>-<l2d>-no-<pol>-1core
 4. **并行测试**: 9 个并行测试可用 Python `threading.Thread` 或 `bash &`+`wait`
 5. **二进制存放**: 存在 `/tmp` 是安全的（不会被覆盖）。`bin/` 目录也可，但每次 `make clean` 后 `bin/champsim` 不会被删除，需手动清理旧文件
 6. **API 参数格式**: `getopt_long_only` 使用 `--key value`（双横线 + 空格），不支持 `--key=value`
-7. **area_map 路径**: 必须存在于 `artifacts/runs/task3.1-gen-areamaps/latest/`
-8. **K 值来源**: 从 `artifacts/runs/task3.0-prep-pagecount/latest/pages.jsonl` 读取，公式 `min(WSS/3, 262144)`
+7. **area_map 路径**: 必须显式匹配实验规模；50M+100M 使用 first 150M 指令窗口生成的 maps，50M+1B 使用 first 1050M 指令窗口生成的 maps
+8. **DRAM:CXL 比例**: 固定 1:2；`gen_area_map` 从目标指令窗口内 distinct 4KB pages 自动取 `floor(total_pages/3)` 为 DRAM，Stage 3.3 不再读取 Task 3.0 K
 9. **`/home/liz/data_storage` 是 `/mnt/sdd/liz` 的软链接** — 两者是同一文件系统，注意文件冲突
 10. **当前验证数据**: omnetpp 的单 benchmark 已通过 (Sort DRAM 50%, Random DRAM 31%, FCFS DRAM 30%)
 
@@ -107,8 +107,8 @@ cp bin/champsim bin/hp-<l1d>-<l2d>-no-<pol>-1core
 - [ ] 重跑 task3.3 全量 360 runs（50M+100M）
 - [ ] 跑 task3.3 全量 360 runs（50M+1B）
 - [ ] 验证 prefetcher configs 的 IPC 合理性（目前 PA→VA 修复未影响 prefetcher，但 prefetcher 效果待确认）
-- [ ] Forward migration 的 TracePageBuffer `consume()` 机制需测试是否正确触发
-- [ ] RPP 内部 area 查询细节——目前 `handle_fill` 传 area 到 replacement，但其他调用路径用默认值
+- [x] Forward migration 的 TracePageBuffer `consume()` 机制已在 omnetpp 10M/20M 快速验证中触发 action 行
+- [x] RPP 内部 area 查询细节：LLC replacement update 路径已传递 block/packet area
 
 ## 快速验证脚本
 
@@ -127,8 +127,9 @@ import subprocess, re, threading
 base='/mnt/sdd/liz/rebuttal/stages/stage3-prefetcher'
 amap_s=f'{base}/artifacts/runs/task3.1-gen-areamaps/latest/omnetpp_sort_heat.amap'
 amap_f=f'{base}/artifacts/runs/task3.1-gen-areamaps/latest/omnetpp_first_touch.amap'
-t=f'{base}/trace/omnetpp_4B.trace.xz'; K=5384
-for cfg,extra in [('Random',''),('Sort',f'-a {amap_s} -d {K}'),('FCFS',f'-a {amap_f} -d {K}')]:
+amap_r=f'{base}/artifacts/runs/task3.1-gen-areamaps/latest/omnetpp_random.amap'
+t=f'{base}/trace/omnetpp_4B.trace.xz'
+for cfg,extra in [('Random',f'-a {amap_r}'),('Sort',f'-a {amap_s}'),('FCFS',f'-a {amap_f}')]:
     for pol in ['lru','mockingjay','rpp']:
         def run(c=cfg,p=pol,e=extra):
             o=f'/tmp/vfy_{c}_{p}.out'

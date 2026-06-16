@@ -1,26 +1,26 @@
 # Task 3.0 Conclusions — Working Set Size Survey
 
-**Date:** 2026-06-15 16:01:11 | **Input:** ChampSim traces (12 unique workloads) | **Run:** 20260615-160018 | **Status:** Complete
+**Date:** 2026-06-16 15:29:59 | **Input:** ChampSim traces (12 unique workloads) | **Run:** 20260616-152936 | **Status:** Complete
 
 ## Results
 
 | Benchmark | WSS Pages | WSS (MB) | DRAM Pages (K) | DRAM (MB) |
 |-----------|-----------|----------|---------------------|-----------|
 | h264ref_178B | 1,282 | 5.0 | 427 | 1.7 |
-| perlbench_53B | 2,309 | 9.0 | 769 | 3.0 |
-| sphinx3_883B | 3,865 | 15.1 | 1,288 | 5.0 |
-| astar_163B | 5,061 | 19.8 | 1,687 | 6.6 |
+| perlbench_53B | 2,160 | 8.4 | 720 | 2.8 |
+| sphinx3_883B | 3,861 | 15.1 | 1,287 | 5.0 |
+| astar_163B | 5,031 | 19.7 | 1,677 | 6.6 |
+| cactusADM_734B | 7,244 | 28.3 | 2,414 | 9.4 |
 | libquantum_964B | 8,196 | 32.0 | 2,732 | 10.7 |
-| cactusADM_734B | 10,666 | 41.7 | 3,555 | 13.9 |
-| soplex_66B | 11,870 | 46.4 | 3,956 | 15.5 |
-| zeusmp_100B | 13,111 | 51.2 | 4,370 | 17.1 |
-| omnetpp_4B | 16,154 | 63.1 | 5,384 | 21.0 |
-| xalancbmk_99B | 19,866 | 77.6 | 6,622 | 25.9 |
-| mcf_46B | 64,191 | 250.7 | 21,397 | 83.6 |
-| milc_360B | 93,475 | 365.1 | 31,158 | 121.7 |
+| zeusmp_100B | 9,180 | 35.9 | 3,060 | 12.0 |
+| soplex_66B | 11,831 | 46.2 | 3,943 | 15.4 |
+| omnetpp_4B | 15,996 | 62.5 | 5,332 | 20.8 |
+| xalancbmk_99B | 19,203 | 75.0 | 6,401 | 25.0 |
+| mcf_46B | 50,357 | 196.7 | 16,785 | 65.6 |
+| milc_360B | 88,935 | 347.4 | 29,645 | 115.8 |
 
 - 12 valid benchmarks
-- DRAM pages range: 427 – 31,158
+- DRAM pages range: 427 – 29,645
 
 ## Filter
 
@@ -38,5 +38,6 @@
 
 ## Next Stage
 
-- Stage 3.1: Generate area_map files (sort_heat / first_touch) using per-benchmark K values
-- K = min(WSS / 3, 262144) from this stage's pages.jsonl
+- Stage 3.1: Generate area_map files (random / sort_heat / first_touch)
+- DRAM:CXL=1:2 is derived directly by the area_map generator from each trace's distinct pages
+- This stage's pages.jsonl is retained as an informational WSS survey, not as a required K input

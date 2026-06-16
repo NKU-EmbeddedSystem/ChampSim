@@ -11,12 +11,14 @@
 | Parameter | Value |
 |-----------|-------|
 | Warmup | 50M instructions |
-| Simulation | 100M instructions |
+| Simulation | 100M instructions first; 1B instructions as the long follow-up |
 | Branch predictor | hashed_perceptron |
 | Page size | 4KB |
-| DRAM pages (K) | min(WSS × 0.3, 262144) — from Task 3.0 |
+| DRAM:CXL ratio | Fixed 1:2 by distinct 4KB pages in the target instruction window |
+| DRAM pages (K) | Auto-derived as `floor(distinct_pages / 3)` when generating each window-specific area_map; no Task 3.0 `pages.jsonl` dependency |
+| area_map scope | Treat 50M+100M and 50M+1B as separate program windows; generate separate area_map sets for first 150M and first 1050M instructions |
 | Cores | 1 |
-| MAX_PARALLEL | 6 |
+| MAX_PARALLEL | 48 by default; override with env var after checking host load |
 
 ## Candidates (10 configurations)
 
@@ -24,14 +26,14 @@ Config 分解为三个维度：**Placement** (Random / Sort_offline / FCFS), **M
 
 | # | Label | Placement | Migration | L1D Pref | L2C Pref | area_map | migration_arg |
 |---|-------|-----------|-----------|----------|----------|----------|---------------|
-| 1 | Rnd+Nomig+NoPF | Random | None | no | no | — | — |
+| 1 | Rnd+Nomig+NoPF | Random | None | no | no | `{wl}_random.amap` | — |
 | 2 | Sort+Nomig+NoPF | sort_heat | None | no | no | `{wl}_sort_heat.amap` | — |
 | 3 | FCFS+Nomig+NoPF | first_touch | None | no | no | `{wl}_first_touch.amap` | — |
-| 4 | Rnd+Fwd+NoPF | Random | Forward | no | no | — | `--migration=forward` |
-| 5 | Rnd+Bwd+NoPF | Random | Backward | no | no | — | `--migration=backward` |
-| 6 | Rnd+Nomig+IPCP(L1D) | Random | None | ipcp | no | — | — |
-| 7 | Rnd+Nomig+IPstride(L2C) | Random | None | no | ip_stride | — | — |
-| 8 | Rnd+Nomig+BothPF | Random | None | ipcp | ip_stride | — | — |
+| 4 | Rnd+Fwd+NoPF | Random | Forward | no | no | `{wl}_random.amap` | `--migration=forward` |
+| 5 | Rnd+Bwd+NoPF | Random | Backward | no | no | `{wl}_random.amap` | `--migration=backward` |
+| 6 | Rnd+Nomig+IPCP(L1D) | Random | None | ipcp | no | `{wl}_random.amap` | — |
+| 7 | Rnd+Nomig+IPstride(L2C) | Random | None | no | ip_stride | `{wl}_random.amap` | — |
+| 8 | Rnd+Nomig+BothPF | Random | None | ipcp | ip_stride | `{wl}_random.amap` | — |
 | 9 | FCFS+Bwd+BothPF | first_touch | Backward | ipcp | ip_stride | `{wl}_first_touch.amap` | `--migration=backward` |
 | 10 | Sort+Fwd+BothPF | sort_heat | Forward | ipcp | ip_stride | `{wl}_sort_heat.amap` | `--migration=forward` |
 
@@ -79,43 +81,43 @@ Total tasks: 12 benchmarks × 10 configs × 3 policies = **360 runs**
 ```
 Config 1 (Rnd+Nomig+NoPF):
   Binary: hp-no-no-no-{pol}-1core
-  Args:  (none extra)
+  Args:  -a {wl}_random.amap
 
 Config 2 (Sort+Nomig+NoPF):
   Binary: hp-no-no-no-{pol}-1core
-  Args:  --area_map={wl}_sort_heat.amap --dram_pages={K}
+  Args:  -a {wl}_sort_heat.amap
 
 Config 3 (FCFS+Nomig+NoPF):
   Binary: hp-no-no-no-{pol}-1core
-  Args:  --area_map={wl}_first_touch.amap --dram_pages={K}
+  Args:  -a {wl}_first_touch.amap
 
 Config 4 (Rnd+Fwd+NoPF):
   Binary: hp-no-no-no-{pol}-1core
-  Args:  --migration=forward --dram_pages={K}
+  Args:  -a {wl}_random.amap -m forward
 
 Config 5 (Rnd+Bwd+NoPF):
   Binary: hp-no-no-no-{pol}-1core
-  Args:  --migration=backward --dram_pages={K}
+  Args:  -a {wl}_random.amap -m backward
 
 Config 6 (Rnd+Nomig+IPCP@L1D):
   Binary: hp-ipcp-no-no-{pol}-1core
-  Args:  (none extra)
+  Args:  -a {wl}_random.amap
 
 Config 7 (Rnd+Nomig+IPstride@L2C):
   Binary: hp-no-ip_stride-no-{pol}-1core
-  Args:  (none extra)
+  Args:  -a {wl}_random.amap
 
 Config 8 (Rnd+Nomig+BothPF):
   Binary: hp-ipcp-ip_stride-no-{pol}-1core
-  Args:  (none extra)
+  Args:  -a {wl}_random.amap
 
 Config 9 (FCFS+Bwd+BothPF):
   Binary: hp-ipcp-ip_stride-no-{pol}-1core
-  Args:  --area_map={wl}_first_touch.amap --dram_pages={K} --migration=backward
+  Args:  -a {wl}_first_touch.amap -m backward
 
 Config 10 (Sort+Fwd+BothPF):
   Binary: hp-ipcp-ip_stride-no-{pol}-1core
-  Args:  --area_map={wl}_sort_heat.amap --dram_pages={K} --migration=forward
+  Args:  -a {wl}_sort_heat.amap -m forward
 ```
 
 ## Auxiliary Checks
@@ -123,8 +125,9 @@ Config 10 (Sort+Fwd+BothPF):
 1. **All 360 tasks complete:** 每个 task 的 `exit=0`，IPC > 0
 2. **LRU baseline consistent:** Config 1 (Rnd+Nomig+NoPF) 在不同 prefetcher combo 下 LRU IPC 与理论一致
 3. **RPP ≥ MJ in random placement:** Config 1 中 RPP/MJ ≥ 1.0（RPP 在 random placement 下优势最大）
-4. **Prefetcher doesn't break migration:** Configs 9/10 中 migration 正常工作（log 中有 `[migration]` 行）
-5. **IPC 随 placement 改善而提升:** Sort_offline 和 FCFS 的 IPC ≥ Random baseline
+4. **Prefetcher doesn't break migration:** Configs 9/10 中 migration 正常工作（log 中必须有 `[migration] forward #...` / `[migration] backward #...` action 行，不能只看 init 行）
+5. **Area-map ratio fixed:** `random/sort_heat/first_touch` area_map 均满足 area0 pages = `floor(num_entries / 3)`，其余 pages 为 CXL
+6. **IPC 随 placement 改善而提升:** Sort_offline 和 FCFS 的 IPC ≥ Random baseline
 
 ## Expected Comparison Table
 

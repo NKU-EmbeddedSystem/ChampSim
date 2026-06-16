@@ -20,6 +20,9 @@
  *   gen_area_map --trace=<path.xz|.gz> --output=<path.amap>
  *       --placement=<random|sort_heat|first_touch>
  *       [--dram_pages=<K>] [--max_instructions=<N>] [--skip_instructions=<N>]
+ *
+ * If --dram_pages is omitted, K is derived from the trace itself:
+ *   K = floor(distinct_pages / 3), giving DRAM:CXL = 1:2 by page count.
  */
 
 #include <algorithm>
@@ -51,6 +54,20 @@ struct __attribute__((packed)) ChampSimInstr {
 
 static const uint32_t AREA_MAP_MAGIC   = 0x41524541; // "AREA"
 static const uint32_t AREA_MAP_VERSION = 1;
+
+static uint64_t resolve_dram_pages(size_t total_pages,
+                                   uint64_t requested_dram_pages,
+                                   bool has_dram_pages_override,
+                                   const char *placement) {
+  uint64_t k = has_dram_pages_override
+      ? requested_dram_pages
+      : static_cast<uint64_t>(total_pages / 3);
+  std::cerr << "[" << placement << "] total_pages=" << total_pages
+            << " dram_pages=" << k
+            << (has_dram_pages_override ? " (override)" : " (auto DRAM:CXL=1:2)")
+            << "\n";
+  return k;
+}
 
 // ---------------------------------------------------------------------------
 // Write sorted entries to binary file
@@ -109,11 +126,11 @@ static void read_trace(const std::string &path,
     fn(rec);
     count++;
     if (count % 100000000 == 0)
-      std::cerr << "  " << (count / 1000000) << "M accesses\n";
+      std::cerr << "  " << (count / 1000000) << "M instructions\n";
     if (max_instr > 0 && count >= max_instr) break;
   }
   pclose(p);
-  std::cerr << "  Total: " << count << " accesses"
+  std::cerr << "  Total: " << count << " instructions"
             << (max_instr > 0 ? " (limited to " + std::to_string(max_instr) + ")" : "")
             << "\n";
 }
@@ -122,19 +139,23 @@ static void read_trace(const std::string &path,
 // Strategy: first_touch
 // ---------------------------------------------------------------------------
 static void do_first_touch(const std::string &trace_path, uint64_t K,
+                           bool has_dram_pages_override,
                            const std::string &output, uint64_t max_instr = 0, uint64_t skip_instr = 0) {
-  std::unordered_map<uint64_t, uint8_t> page_area;
-  uint64_t distinct = 0;
+  std::unordered_set<uint64_t> seen;
+  std::vector<uint64_t> ordered_pages;
   read_trace(trace_path, [&](const ChampSimInstr &r) {
     extract_pages(r, [&](uint64_t pid) {
-      if (page_area.find(pid) == page_area.end()) {
-        page_area[pid] = (distinct < K) ? 0 : 1;
-        distinct++;
+      if (seen.insert(pid).second) {
+        ordered_pages.push_back(pid);
       }
     });
   }, max_instr, skip_instr);
+  K = resolve_dram_pages(ordered_pages.size(), K, has_dram_pages_override, "first_touch");
+
   std::vector<std::pair<uint64_t, uint8_t>> entries;
-  for (auto &kv : page_area) entries.push_back({kv.first, kv.second});
+  entries.reserve(ordered_pages.size());
+  for (size_t i = 0; i < ordered_pages.size(); ++i)
+    entries.push_back({ordered_pages[i], (i < K) ? (uint8_t)0 : (uint8_t)1});
   std::sort(entries.begin(), entries.end(),
     [](auto &a, auto &b) { return a.first < b.first; });
   write_area_map(output, entries);
@@ -145,6 +166,7 @@ static void do_first_touch(const std::string &trace_path, uint64_t K,
 // Strategy: sort_heat
 // ---------------------------------------------------------------------------
 static void do_sort_heat(const std::string &trace_path, uint64_t K,
+                         bool has_dram_pages_override,
                          const std::string &output, uint64_t max_instr = 0, uint64_t skip_instr = 0) {
   std::unordered_map<uint64_t, uint64_t> page_count;
   read_trace(trace_path, [&](const ChampSimInstr &r) {
@@ -155,6 +177,7 @@ static void do_sort_heat(const std::string &trace_path, uint64_t K,
   for (auto &kv : page_count) sorted.push_back(kv);
   std::sort(sorted.begin(), sorted.end(),
     [](auto &a, auto &b) { return a.second > b.second; });
+  K = resolve_dram_pages(sorted.size(), K, has_dram_pages_override, "sort_heat");
   // Assign top-K → area 0
   std::vector<std::pair<uint64_t, uint8_t>> entries;
   for (size_t i = 0; i < sorted.size(); ++i)
@@ -169,6 +192,7 @@ static void do_sort_heat(const std::string &trace_path, uint64_t K,
 // Strategy: random
 // ---------------------------------------------------------------------------
 static void do_random(const std::string &trace_path, uint64_t K,
+                      bool has_dram_pages_override,
                       const std::string &output, uint64_t max_instr = 0, uint64_t skip_instr = 0) {
   std::vector<uint64_t> page_ids;
   std::unordered_map<uint64_t, bool> seen;
@@ -177,6 +201,7 @@ static void do_random(const std::string &trace_path, uint64_t K,
       if (!seen[pid]) { seen[pid] = true; page_ids.push_back(pid); }
     });
   }, max_instr, skip_instr);
+  K = resolve_dram_pages(page_ids.size(), K, has_dram_pages_override, "random");
   std::mt19937 rng(42);
   std::shuffle(page_ids.begin(), page_ids.end(), rng);
   std::vector<std::pair<uint64_t, uint8_t>> entries;
@@ -193,7 +218,8 @@ static void do_random(const std::string &trace_path, uint64_t K,
 // ---------------------------------------------------------------------------
 int main(int argc, char *argv[]) {
   std::string trace_path, output_path, placement = "sort_heat";
-  uint64_t dram_pages = 262144;
+  uint64_t dram_pages = 0;
+  bool has_dram_pages_override = false;
   uint64_t max_instr = 0;
   uint64_t skip_instr = 0;
 
@@ -202,7 +228,10 @@ int main(int argc, char *argv[]) {
     if (arg.rfind("--trace=", 0) == 0)           trace_path = arg.substr(8);
     else if (arg.rfind("--output=", 0) == 0)      output_path = arg.substr(9);
     else if (arg.rfind("--placement=", 0) == 0)   placement = arg.substr(12);
-    else if (arg.rfind("--dram_pages=", 0) == 0)  dram_pages = std::stoull(arg.substr(13));
+    else if (arg.rfind("--dram_pages=", 0) == 0) {
+      dram_pages = std::stoull(arg.substr(13));
+      has_dram_pages_override = true;
+    }
     else if (arg.rfind("--skip_instructions=", 0) == 0)
       skip_instr = std::stoull(arg.substr(20));
     else if (arg.rfind("--max_instructions=", 0) == 0)
@@ -212,19 +241,20 @@ int main(int argc, char *argv[]) {
   if (trace_path.empty() || output_path.empty()) {
     std::cerr << "Usage: gen_area_map --trace=<path.xz|.gz> --output=<path.amap> "
                  "--placement=<random|sort_heat|first_touch> [--dram_pages=<K>] "
-                 "[--max_instructions=<N>]\n";
+                 "[--max_instructions=<N>]\n"
+                 "Default: K=floor(distinct_pages/3), DRAM:CXL=1:2.\n";
     return 1;
   }
 
 
   std::cerr << "gen_area_map: placement=" << placement
-            << " dram_pages=" << dram_pages
+            << " dram_pages=" << (has_dram_pages_override ? std::to_string(dram_pages) : "auto")
             << " max_instr=" << (max_instr > 0 ? std::to_string(max_instr) : "all") << " skip=" << (skip_instr > 0 ? std::to_string(skip_instr) : "none")
             << "\n";
 
-  if (placement == "random")          do_random(trace_path, dram_pages, output_path, max_instr, skip_instr);
-  else if (placement == "sort_heat")  do_sort_heat(trace_path, dram_pages, output_path, max_instr, skip_instr);
-  else if (placement == "first_touch") do_first_touch(trace_path, dram_pages, output_path, max_instr, skip_instr);
+  if (placement == "random")          do_random(trace_path, dram_pages, has_dram_pages_override, output_path, max_instr, skip_instr);
+  else if (placement == "sort_heat")  do_sort_heat(trace_path, dram_pages, has_dram_pages_override, output_path, max_instr, skip_instr);
+  else if (placement == "first_touch") do_first_touch(trace_path, dram_pages, has_dram_pages_override, output_path, max_instr, skip_instr);
   else { std::cerr << "Unknown placement: " << placement << "\n"; return 1; }
 
   return 0;

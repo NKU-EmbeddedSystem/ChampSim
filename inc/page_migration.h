@@ -9,14 +9,13 @@
 // Forward declaration
 class TracePageBuffer;
 
-#define PAGE_SIZE 4096
-#define MIGRATION_INTERVAL 1000000  // trigger migration every 1M LLC accesses
+#define MIGRATION_INTERVAL 1000000  // trigger migration every 1M data-memory accesses
 
 enum class MigrationMode { NONE, FORWARD, BACKWARD, FORWARD_LAZY, BACKWARD_LAZY };
 
 class PageMigrationEngine {
 public:
-  PageMigrationEngine() : mode_(MigrationMode::NONE), dram_pages_(262144),
+  PageMigrationEngine() : mode_(MigrationMode::NONE), dram_pages_(0),
                           access_count_(0), interval_start_(0) {}
 
   // Configure: set migration mode + DRAM capacity + initial area_map
@@ -26,8 +25,9 @@ public:
   // Set the trace page buffer (required for FORWARD / FORWARD_LAZY modes)
   void setPageBuffer(TracePageBuffer *buf) { page_buffer_ = buf; }
 
-  // Called on every LLC access to track heat
-  void recordAccess(uint64_t page_id);
+  // Called on every data-memory reference to track heat during ROI and align
+  // forward lookahead during warmup.
+  void recordAccess(uint64_t page_id, bool in_roi = true);
 
   // Trigger migration check. Should be called periodically.
   void maybeMigrate(uint64_t current_cycle);
@@ -40,6 +40,9 @@ public:
 
   // Check if migration is enabled
   bool isActive() const { return mode_ != MigrationMode::NONE; }
+  bool usesForwardLookahead() const {
+    return mode_ == MigrationMode::FORWARD || mode_ == MigrationMode::FORWARD_LAZY;
+  }
 
   // Stats
   uint64_t getMigrateCount() const { return migrate_count_; }
@@ -95,7 +98,7 @@ private:
   // pick up to `slots` additional pages from old DRAM pages (by their
   // last_interval_heat_) that are NOT already in new_dram.
   uint64_t backfillFromOldDram(
-      const std::unordered_map<uint64_t, uint64_t> &new_dram_pages,
+      std::unordered_map<uint64_t, uint64_t> &new_dram_pages,
       uint64_t slots);
 
   // Apply the new dram assignment: dram_set → area 0, everything else → area 1
@@ -110,6 +113,14 @@ private:
                          uint64_t pages_moved,
                          double dram_heat_sum, uint64_t dram_count,
                          double cxl_heat_sum, uint64_t cxl_count);
+
+  // Resolve DRAM capacity. Explicit --dram_pages wins; otherwise use the
+  // initial area_map's DRAM count, or one third of the currently known pages.
+  uint64_t effectiveDramPages(uint64_t candidate_pages) const;
+
+  // Update both the migration engine's current map and the live mapper used by
+  // packet area assignment.
+  void setPageArea(uint64_t page_id, uint8_t area);
 };
 
 #endif // PAGE_MIGRATION_H

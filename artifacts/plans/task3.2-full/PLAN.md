@@ -14,7 +14,8 @@
 | Simulation | 100M instructions |
 | Branch predictor | hashed_perceptron |
 | Prefetchers | no (all levels) |
-| DRAM pages (K) | min(WSS × 0.3, 262144) — from Task 3.0 |
+| DRAM:CXL ratio | Fixed 1:2 by distinct 4KB pages in each area_map |
+| DRAM pages (K) | Auto-derived as `floor(distinct_pages / 3)` when generating each area_map; no Task 3.0 `pages.jsonl` dependency |
 | Page size | 4KB |
 | Cores | 1 |
 | MAX_PARALLEL | 12 |
@@ -23,7 +24,7 @@
 
 | Index | Placement | Migration | Description |
 |-------|-----------|-----------|-------------|
-| 0 | baseline | none | Random area assignment (no area_map) |
+| 0 | baseline | none | Deterministic random area_map with DRAM:CXL=1:2 |
 | 1 | sort_heat | none | Offline heat sort + static placement |
 | 2 | sort_heat | forward | + future nextAccess prediction migration |
 | 3 | sort_heat | backward | + past heat count migration |

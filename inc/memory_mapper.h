@@ -38,6 +38,11 @@ public:
 
   bool has_area_map() const { return area_map_loaded; }
 
+  void set_page_area(uint64_t page_id, uint8_t area) {
+    area_map_4k[page_id] = area;
+    area_map_loaded = true;
+  }
+
   int get_assigned_area(uint64_t full_addr, bool is_allocated) {
     if (area_map_loaded) {
       uint64_t page_id = full_addr >> PAGE_4K_SHIFT;

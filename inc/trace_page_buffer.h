@@ -83,6 +83,16 @@ public:
     return counts;
   }
 
+  // Skip N page_ids without counting them. Used to align forward lookahead past
+  // warmup references before ROI migrations begin.
+  size_t advance(size_t N) {
+    size_t w = write_pos_.load(std::memory_order_acquire);
+    size_t available = (w > read_pos_) ? (w - read_pos_) : 0;
+    size_t to_skip = (N < available) ? N : available;
+    read_pos_ += to_skip;
+    return to_skip;
+  }
+
 private:
   std::atomic<uint64_t>* ring_;
   std::atomic<size_t> write_pos_{0};

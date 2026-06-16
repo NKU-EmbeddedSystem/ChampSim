@@ -1,4 +1,5 @@
 #include "page_migration.h"
+#include "memory_mapper.h"
 #include "trace_page_buffer.h"
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,11 @@ void PageMigrationEngine::init(MigrationMode mode, uint64_t dram_pages,
   mode_ = mode;
   dram_pages_ = dram_pages;
   page_area_ = initial_map;
+  if (dram_pages_ == 0 && !page_area_.empty()) {
+    for (auto &kv : page_area_) {
+      if (kv.second == 0) dram_pages_++;
+    }
+  }
   access_count_ = 0;
   interval_start_ = 0;
   migrate_count_ = 0;
@@ -36,10 +42,16 @@ void PageMigrationEngine::init(MigrationMode mode, uint64_t dram_pages,
   }
   std::cerr << "[migration] mode=" << mode_str
             << " dram_pages=" << dram_pages_
+            << (dram_pages == 0 ? " (auto)" : " (override)")
             << " initial_map_entries=" << initial_map.size() << "\n";
 }
 
-void PageMigrationEngine::recordAccess(uint64_t page_id) {
+void PageMigrationEngine::recordAccess(uint64_t page_id, bool in_roi) {
+  if (!in_roi) {
+    if (usesForwardLookahead() && page_buffer_) page_buffer_->advance(1);
+    return;
+  }
+
   access_count_++;
   if (mode_ == MigrationMode::BACKWARD || mode_ == MigrationMode::BACKWARD_LAZY)
     heat_counts_[page_id]++;
@@ -82,6 +94,17 @@ uint8_t PageMigrationEngine::getArea(uint64_t page_id) const {
   return 1; // default: CXL
 }
 
+uint64_t PageMigrationEngine::effectiveDramPages(uint64_t candidate_pages) const {
+  if (dram_pages_ > 0) return dram_pages_;
+  if (!page_area_.empty()) return page_area_.size() / 3;
+  return candidate_pages / 3;
+}
+
+void PageMigrationEngine::setPageArea(uint64_t page_id, uint8_t area) {
+  page_area_[page_id] = area;
+  MemoryMapper::get_instance().set_page_area(page_id, area);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +119,7 @@ PageMigrationEngine::buildSorted(const std::unordered_map<uint64_t, uint64_t> &h
 }
 
 uint64_t PageMigrationEngine::backfillFromOldDram(
-    const std::unordered_map<uint64_t, uint64_t> &new_dram_pages,
+    std::unordered_map<uint64_t, uint64_t> &new_dram_pages,
     uint64_t slots) {
   if (slots == 0) return 0;
 
@@ -120,7 +143,7 @@ uint64_t PageMigrationEngine::backfillFromOldDram(
   // Backfill up to `slots`
   uint64_t filled = 0;
   for (size_t i = 0; i < candidates.size() && filled < slots; i++) {
-    page_area_[candidates[i].first] = 0;
+    new_dram_pages[candidates[i].first] = candidates[i].second;
     filled++;
   }
 
@@ -151,7 +174,7 @@ uint64_t PageMigrationEngine::applyDramAssignment(
 
     if (old_area != new_area) pages_moved++;
 
-    page_area_[pid] = new_area;
+    setPageArea(pid, new_area);
 
     // Accumulate heat from the heat_map (0 if not present = cold)
     double h = 0.0;
@@ -206,7 +229,7 @@ void PageMigrationEngine::doBackwardMigration() {
 
   auto sorted = buildSorted(heat_counts_);
   size_t N = sorted.size();
-  uint64_t K = dram_pages_;
+  uint64_t K = effectiveDramPages(std::max<uint64_t>(N, page_area_.size()));
 
   std::unordered_map<uint64_t, uint64_t> new_dram_set;
   size_t assign_count = (N < K) ? N : K;
@@ -236,13 +259,13 @@ void PageMigrationEngine::doBackwardMigration() {
 }
 
 void PageMigrationEngine::doForwardMigration() {
+  if (!page_buffer_) return;
 
-  size_t ahead = page_buffer_->aheadOf(0);
   auto future_heat = page_buffer_->consume(1000000);
 
   auto sorted = buildSorted(future_heat);
   size_t N = sorted.size();
-  uint64_t K = dram_pages_;
+  uint64_t K = effectiveDramPages(std::max<uint64_t>(N, page_area_.size()));
 
   std::unordered_map<uint64_t, uint64_t> new_dram_set;
   size_t assign_count = (N < K) ? N : K;
@@ -279,7 +302,12 @@ void PageMigrationEngine::doBackwardLazyMigration() {
     return;
   }
 
-  uint64_t K = dram_pages_;
+  uint64_t K = effectiveDramPages(std::max<uint64_t>(heat_counts_.size(), page_area_.size()));
+  if (K == 0) {
+    last_interval_heat_ = std::move(heat_counts_);
+    heat_counts_.clear();
+    return;
+  }
 
   // ── Compute DRAM heat statistics for thresholds ──
   std::vector<uint64_t> dram_heats;
@@ -332,7 +360,7 @@ void PageMigrationEngine::doBackwardLazyMigration() {
   uint64_t demote_count = 0;
   uint64_t demote_budget = std::min(budget, (uint64_t)demote_candidates.size());
   for (size_t i = 0; i < demote_budget; i++) {
-    page_area_[demote_candidates[i].first] = 1;
+    setPageArea(demote_candidates[i].first, 1);
     demote_count++;
   }
 
@@ -348,7 +376,7 @@ void PageMigrationEngine::doBackwardLazyMigration() {
   uint64_t promote_budget = std::min(budget, (uint64_t)promote_candidates.size());
   promote_budget = std::min(promote_budget, free_slots + demote_count);
   for (size_t i = 0; i < promote_budget; i++) {
-    page_area_[promote_candidates[i].first] = 0;
+    setPageArea(promote_candidates[i].first, 0);
     promote_count++;
   }
 
@@ -371,7 +399,7 @@ void PageMigrationEngine::doBackwardLazyMigration() {
               [](const auto &a, const auto &b) { return a.second < b.second; });
     uint64_t excess = dram_after_promote - K;
     for (size_t i = 0; i < excess && i < all_dram.size(); i++) {
-      page_area_[all_dram[i].first] = 1;
+      setPageArea(all_dram[i].first, 1);
     }
   }
 
@@ -405,7 +433,8 @@ void PageMigrationEngine::doForwardLazyMigration() {
     return;
   }
 
-  uint64_t K = dram_pages_;
+  uint64_t K = effectiveDramPages(page_area_.size());
+  if (K == 0) return;
 
   // ── Compute DRAM heat statistics using future_heat ──
   std::vector<uint64_t> dram_heats;
@@ -457,7 +486,7 @@ void PageMigrationEngine::doForwardLazyMigration() {
   uint64_t demote_count = 0;
   uint64_t demote_budget = std::min(budget, (uint64_t)demote_candidates.size());
   for (size_t i = 0; i < demote_budget; i++) {
-    page_area_[demote_candidates[i].first] = 1;
+    setPageArea(demote_candidates[i].first, 1);
     demote_count++;
   }
 
@@ -473,7 +502,7 @@ void PageMigrationEngine::doForwardLazyMigration() {
   uint64_t promote_budget = std::min(budget, (uint64_t)promote_candidates.size());
   promote_budget = std::min(promote_budget, free_slots + demote_count);
   for (size_t i = 0; i < promote_budget; i++) {
-    page_area_[promote_candidates[i].first] = 0;
+    setPageArea(promote_candidates[i].first, 0);
     promote_count++;
   }
 
@@ -496,7 +525,7 @@ void PageMigrationEngine::doForwardLazyMigration() {
               [](const auto &a, const auto &b) { return a.second < b.second; });
     uint64_t excess = dram_after_promote - K;
     for (size_t i = 0; i < excess && i < all_dram.size(); i++) {
-      page_area_[all_dram[i].first] = 1;
+      setPageArea(all_dram[i].first, 1);
     }
   }
 

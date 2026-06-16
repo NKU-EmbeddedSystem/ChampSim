@@ -210,7 +210,7 @@ void CACHE::handle_fill() {
             llc_update_replacement_state(
                 fill_cpu, set, way, MSHR.entry[mshr_index].full_addr,
                 MSHR.entry[mshr_index].ip, block[set][way].full_addr,
-                MSHR.entry[mshr_index].type, 0);
+                MSHR.entry[mshr_index].type, 0, MSHR.entry[mshr_index].area);
           } else
             update_replacement_state(
                 fill_cpu, set, way, MSHR.entry[mshr_index].full_addr,
@@ -338,7 +338,8 @@ void CACHE::handle_writeback() {
         if (cache_type == IS_LLC) {
           llc_update_replacement_state(
               writeback_cpu, set, way, block[set][way].full_addr,
-              WQ.entry[index].ip, 0, WQ.entry[index].type, 1);
+              WQ.entry[index].ip, 0, WQ.entry[index].type, 1,
+              block[set][way].area);
 
         } else
           update_replacement_state(
@@ -605,7 +606,7 @@ void CACHE::handle_writeback() {
               llc_update_replacement_state(
                   writeback_cpu, set, way, WQ.entry[index].full_addr,
                   WQ.entry[index].ip, block[set][way].full_addr,
-                  WQ.entry[index].type, 0);
+                  WQ.entry[index].type, 0, WQ.entry[index].area);
             } else
               update_replacement_state(
                   writeback_cpu, set, way, WQ.entry[index].full_addr,
@@ -739,7 +740,7 @@ void CACHE::handle_read() {
         if (cache_type == IS_LLC) {
           llc_update_replacement_state(
               read_cpu, set, way, block[set][way].full_addr, RQ.entry[index].ip,
-              0, RQ.entry[index].type, 1);
+              0, RQ.entry[index].type, 1, block[set][way].area);
 
         } else
           update_replacement_state(
@@ -1036,7 +1037,8 @@ void CACHE::handle_prefetch() {
         if (cache_type == IS_LLC) {
           llc_update_replacement_state(
               prefetch_cpu, set, way, block[set][way].full_addr,
-              PQ.entry[index].ip, 0, PQ.entry[index].type, 1);
+              PQ.entry[index].ip, 0, PQ.entry[index].type, 1,
+              block[set][way].area);
 
         } else
           update_replacement_state(

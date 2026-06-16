@@ -6,22 +6,11 @@ set -uo pipefail
 STAGE_DIR="$(cd "$(dirname "$0")" && pwd)/.."
 TRACE_DIR="$STAGE_DIR/trace"
 AMAP_DIR="$STAGE_DIR/artifacts/runs/task3.1-gen-areamaps/latest"
-TASK30_DATA="$STAGE_DIR/artifacts/runs/task3.0-prep-pagecount/latest/pages.jsonl"
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$STAGE_DIR/artifacts/runs/quick-3configs/$RUN_TS"
 MAX_PARALLEL=64
 
 mkdir -p "$RUN_DIR"
-
-# ── Load K values from Task 3.0 ──
-declare -A K
-if [ -f "$TASK30_DATA" ]; then
-  while IFS= read -r line; do
-    bmark=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['benchmark'])" 2>/dev/null)
-    wss=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['num_pages'])" 2>/dev/null)
-    K[$bmark]=$(python3 -c "print(int(min($wss / 3, 262144)))" 2>/dev/null)
-  done < "$TASK30_DATA"
-fi
 
 # ── 12 benchmarks ──
 declare -A TRACES
@@ -59,19 +48,32 @@ cat > "$RUN_DIR/main.log" << EOF
 
 EOF
 
+missing_maps=0
+for wl in "${!TRACES[@]}"; do
+  for placement in "${PLACEMENTS[@]}"; do
+    amap="$AMAP_DIR/${wl}_${placement}.amap"
+    if [ ! -f "$amap" ]; then
+      echo "MISSING area_map: $amap" >> "$RUN_DIR/main.log"
+      missing_maps=$((missing_maps+1))
+    fi
+  done
+done
+if [ "$missing_maps" -ne 0 ]; then
+  echo "FATAL: missing $missing_maps area_map files. Run scripts/run_task3.1_gen_areamaps.sh first." | tee -a "$RUN_DIR/main.log"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE DONE  stage=quick-3configs  pass=0  fail=$TOTAL  result=missing_area_maps" >> "$RUN_DIR/execution.log"
+  exit 1
+fi
+
 running=0; idx=0
 for wl in "${!TRACES[@]}"; do
   tname="${TRACES[$wl]}"
   TRACE="$TRACE_DIR/${tname}.trace.xz"
-  kv=${K[$tname]:-262144}
 
   for placement in "${PLACEMENTS[@]}"; do
     # Build args
-    args=""
-    if [ "$placement" != "random" ]; then
-      amap="$AMAP_DIR/${wl}_${placement}.amap"
-      [ -f "$amap" ] && args="--area_map=$amap --dram_pages=$kv"
-    fi
+    args=()
+    amap="$AMAP_DIR/${wl}_${placement}.amap"
+    [ -f "$amap" ] && args+=("-a" "$amap")
 
     for pol in "${POLICIES[@]}"; do
       idx=$((idx+1))
@@ -85,7 +87,7 @@ for wl in "${!TRACES[@]}"; do
       (
         t0=$(date +%s%3N)
         "$bin" -warmup_instructions 50000000 -simulation_instructions 100000000 \
-          $args -traces "$TRACE" > "$RUN_DIR/${name}.raw" 2>&1
+          "${args[@]}" -traces "$TRACE" > "$RUN_DIR/${name}.raw" 2>&1
         rc=$?; t1=$(date +%s%3N); elapsed=$((t1-t0))
 
         if [ $rc -eq 0 ]; then
@@ -106,8 +108,8 @@ done
 wait
 
 # ── Summary ──
-pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
-fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
+pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || true)
+fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || true)
 
 echo "" >> "$RUN_DIR/main.log"
 echo "────────────────────────────────────────────────────────" >> "$RUN_DIR/main.log"

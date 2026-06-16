@@ -1,5 +1,5 @@
 #!/bin/bash
-# Task 3.1: Generate area_map files for 12 benchmarks × 2 strategies
+# Task 3.1: Generate area_map files for 12 benchmarks × 3 strategies
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,35 +10,18 @@ ARTIFACTS_DIR="$STAGE_DIR/artifacts"
 PLANS_DIR="$ARTIFACTS_DIR/plans/task3.1-gen-areamaps"
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$ARTIFACTS_DIR/runs/task3.1-gen-areamaps/$RUN_TS"
-MAX_PARALLEL=4
-MAX_INSTR=150000000  # warmup(50M) + sim(100M)
-TASK30_DATA="$ARTIFACTS_DIR/runs/task3.0-prep-pagecount/latest/pages.jsonl"
+MAX_PARALLEL="${MAX_PARALLEL:-4}"
+MAX_INSTR="${MAX_INSTR:-${MAX_INSTRUCTIONS:-150000000}}"  # warmup + sim window
 
 mkdir -p "$RUN_DIR"
 
 # Build tool if needed
-if [ ! -x "$TOOL" ]; then
+if [ ! -x "$TOOL" ] || [ "$STAGE_DIR/src/tools/gen_area_map.cc" -nt "$TOOL" ]; then
   echo "Building gen_area_map..."
   g++ -std=c++17 -O2 -o "$TOOL" "$STAGE_DIR/src/tools/gen_area_map.cc" || {
     echo "FATAL: build failed"
     exit 1
   }
-fi
-
-# ------------------------------------------------------------------
-# Load K values from Task 3.0 (or use default 262144)
-# ------------------------------------------------------------------
-declare -A DRAM_PAGES
-if [ -f "$TASK30_DATA" ]; then
-  while IFS= read -r line; do
-    bmark=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['benchmark'])" 2>/dev/null)
-    wss=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['num_pages'])" 2>/dev/null)
-    k=$(python3 -c "print(int(min(int($wss / 3), 262144)))" 2>/dev/null)
-    [ -n "$bmark" ] && DRAM_PAGES[$bmark]=$k
-  done < "$TASK30_DATA"
-  echo "Loaded K values for ${#DRAM_PAGES[@]} benchmarks from Task 3.0"
-else
-  echo "WARNING: Task 3.0 data not found, using default K=262144 for all"
 fi
 
 # 12 unique-workload benchmarks (same as task3.0)
@@ -58,14 +41,14 @@ BENCHMARKS=(
   [zeusmp]=zeusmp_100B
 )
 
-STRATEGIES=(sort_heat first_touch)
+STRATEGIES=(random sort_heat first_touch)
 N_TOTAL=$((${#BENCHMARKS[@]} * ${#STRATEGIES[@]}))
 
 # ══════════════════════════════════════════════════════════
 #  Control plane
 # ══════════════════════════════════════════════════════════
 cat > "$RUN_DIR/execution.log" << EOF
-[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE BEGIN  stage=task3.1-gen-areamaps  tasks=$N_TOTAL  run=$RUN_TS  input=$TRACE_DIR
+[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE BEGIN  stage=task3.1-gen-areamaps  tasks=$N_TOTAL  run=$RUN_TS  input=$TRACE_DIR  max_instr=$MAX_INSTR
 EOF
 
 # ══════════════════════════════════════════════════════════
@@ -76,6 +59,8 @@ cat > "$RUN_DIR/main.log" << EOF
   Task 3.1: Generate area_map files
   Input:   $TRACE_DIR (ChampSim xz traces)
   Strategies: ${STRATEGIES[*]}  |  Benchmarks: ${#BENCHMARKS[@]} (12 unique workloads)
+  Instruction window: first $MAX_INSTR instructions
+  Placement ratio: DRAM:CXL = 1:2 by distinct 4KB pages
   Total tasks: $N_TOTAL  |  Workers: $MAX_PARALLEL
   Started: $(date '+%Y-%m-%d %H:%M:%S')
   Run dir: $RUN_DIR
@@ -92,7 +77,6 @@ echo "── Task dispatch ──" >> "$RUN_DIR/main.log"
 running=0; task_idx=0
 for wl in "${!BENCHMARKS[@]}"; do
   trace_name="${BENCHMARKS[$wl]}"
-  K=${DRAM_PAGES[$trace_name]:-262144}
   xz_path="$TRACE_DIR/${trace_name}.trace.xz"
 
   for strat in "${STRATEGIES[@]}"; do
@@ -101,19 +85,19 @@ for wl in "${!BENCHMARKS[@]}"; do
 
     echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] TASK DISPATCH  name=$name  log=${name}.sub.log  raw=${name}.raw" >> "$RUN_DIR/execution.log"
 
-    echo "── ${name} (K=$K) ─────────────────────────────────────────────" >> "$RUN_DIR/main.log"
+    echo "── ${name} (DRAM:CXL=1:2) ─────────────────────────────────────────────" >> "$RUN_DIR/main.log"
     echo "  Launch:   $(date '+%H:%M:%S')" >> "$RUN_DIR/main.log"
 
     (
       t0=$(date +%s%3N)
-      "$TOOL" --trace="$xz_path" --output="$amap_path" --placement="$strat" --dram_pages="$K" --max_instructions=$MAX_INSTR > "$RUN_DIR/${name}.raw" 2>&1
+      "$TOOL" --trace="$xz_path" --output="$amap_path" --placement="$strat" --max_instructions=$MAX_INSTR > "$RUN_DIR/${name}.raw" 2>&1
       rc=$?; t1=$(date +%s%3N); elapsed=$((t1-t0))
 
       if [ $rc -eq 0 ] && [ -s "$amap_path" ]; then
         nbytes=$(stat --printf='%s' "$amap_path" 2>/dev/null || echo 0)
         # Verify magic bytes
         magic_ok=0
-        [ "$(xxd -l 4 -p "$amap_path" 2>/dev/null)" = "41524541" ] && magic_ok=1
+        [ "$(xxd -l 4 -p "$amap_path" 2>/dev/null)" = "41455241" ] && magic_ok=1
         echo "[$(date '+%H:%M:%S')] ${name} OK  bytes=$nbytes  magic_ok=$magic_ok  elapsed=${elapsed}ms" > "$RUN_DIR/${name}.sub.log"
         echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] TASK DONE  name=$name  exit=0  elapsed_ms=$elapsed  map_bytes=$nbytes  magic_ok=$magic_ok" >> "$RUN_DIR/execution.log"
       else
@@ -123,7 +107,7 @@ for wl in "${!BENCHMARKS[@]}"; do
     ) &
 
     running=$((running+1)); task_idx=$((task_idx+1))
-    echo "  [$task_idx/$N_TOTAL] ${name} (K=$K)" >> "$RUN_DIR/main.log"
+    echo "  [$task_idx/$N_TOTAL] ${name} (DRAM:CXL=1:2)" >> "$RUN_DIR/main.log"
     if [ $running -ge $MAX_PARALLEL ]; then wait -n; running=$((running-1)); fi
   done
 done
@@ -135,8 +119,8 @@ echo "  All $N_TOTAL launched. Waiting..." >> "$RUN_DIR/main.log"
 # ══════════════════════════════════════════════════════════
 #  Results → main.log
 # ══════════════════════════════════════════════════════════
-pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
-fail=$(grep -c "TASK DONE.*result=failed" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
+pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || true)
+fail=$(grep -c "TASK DONE.*result=failed" "$RUN_DIR/execution.log" 2>/dev/null || true)
 
 cat >> "$RUN_DIR/main.log" << EOF
 
@@ -161,12 +145,28 @@ EOF
 #  Checks → main.log
 # ══════════════════════════════════════════════════════════
 magic_fail=0
+ratio_fail=0
 for wl in "${!BENCHMARKS[@]}"; do
   for strat in "${STRATEGIES[@]}"; do
     amap="$RUN_DIR/${wl}_${strat}.amap"
     if [ -f "$amap" ]; then
       m=$(xxd -l 4 -p "$amap" 2>/dev/null)
-      [ "$m" != "41524541" ] && magic_fail=$((magic_fail+1))
+      [ "$m" != "41455241" ] && magic_fail=$((magic_fail+1))
+      python3 - "$amap" <<'PY' >/dev/null 2>&1 || ratio_fail=$((ratio_fail+1))
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as f:
+    magic, version, entries = struct.unpack("<IIQ", f.read(16))
+    dram = 0
+    for _ in range(entries):
+        rec = f.read(9)
+        if len(rec) != 9:
+            raise SystemExit(1)
+        dram += rec[8] == 0
+
+raise SystemExit(0 if dram == entries // 3 else 1)
+PY
     fi
   done
 done
@@ -178,6 +178,7 @@ cat >> "$RUN_DIR/main.log" << EOF
 ────────────────────────────────────────────────────────
   [$( [ "$pass" -eq "$N_TOTAL" ] && echo "PASS" || echo "FAIL")] All ${pass}/$N_TOTAL tasks succeeded
   [$( [ "$magic_fail" -eq 0 ] && echo "PASS" || echo "FAIL")] Magic bytes correct ($magic_fail failures)
+  [$( [ "$ratio_fail" -eq 0 ] && echo "PASS" || echo "FAIL")] DRAM:CXL 1:2 ratio correct ($ratio_fail failures)
   [$( [ "$fail" -eq 0 ] && echo "PASS" || echo "FAIL")] Zero failures ($fail failures)
 
 ══════════════════════════════════════════════════════════
@@ -203,7 +204,7 @@ import datetime, subprocess
 now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 rows = ''
 for wl in ['astar','cactusADM','h264ref','libquantum','mcf','milc','omnetpp','perlbench','soplex','sphinx3','xalancbmk','zeusmp']:
-    for s in ['sort_heat','first_touch']:
+    for s in ['random','sort_heat','first_touch']:
         name = f'{wl}_{s}'
         amap = f'$RUN_DIR/{name}.amap'
         try:
@@ -226,12 +227,15 @@ conclusions = f'''# Task 3.1 Conclusions — Area Map Generation
 ## Checks
 
 - [{'PASS' if $pass==$N_TOTAL else 'FAIL'}] All {$pass}/$N_TOTAL tasks succeeded
+- [{'PASS' if $magic_fail==0 else 'FAIL'}] Magic bytes correct ($magic_fail failures)
+- [{'PASS' if $ratio_fail==0 else 'FAIL'}] DRAM:CXL 1:2 ratio correct ($ratio_fail failures)
 - [{'PASS' if $fail==0 else 'FAIL'}] Zero failures
 
 ## Next Stage
 
 - Stage 3.2: Full sweep — 7 placement×migration configs × 4 replacement policies
 - Use area_maps from this stage as --area_map inputs
+- DRAM:CXL placement ratio is fixed at 1:2 by distinct 4KB pages
 '''
 with open('$PLANS_DIR/CONCLUSIONS.md', 'w') as f:
     f.write(conclusions)

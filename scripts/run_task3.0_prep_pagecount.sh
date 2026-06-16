@@ -186,7 +186,7 @@ cat >> "$RUN_DIR/main.log" << EOF
   [$( [ "$pass" -eq "$N_TOTAL" ] && echo "PASS" || echo "FAIL")] All traces found ($pass/$N_TOTAL)
   [$( [ "$fail" -eq 0 ] && echo "PASS" || echo "FAIL")] All WSS > 0 (failures=$fail)
   [$( [ "$missing" -eq 0 ] && echo "PASS" || echo "FAIL")] No missing traces ($missing missing)
-  DRAM pages formula: K = min(WSS / 3, 262144)
+  DRAM pages formula: informational K = floor(WSS / 3); Stage 3.1 derives ratio directly from trace
   Best single workload (smallest WSS): $(python3 -c "import json; r=[json.loads(l) for l in open('$RUN_DIR/pages.jsonl') if l.strip()]; r.sort(key=lambda x:x['num_pages']); print(r[0]['benchmark'] if r else 'N/A')" 2>/dev/null)
 
 ══════════════════════════════════════════════════════════
@@ -251,8 +251,9 @@ conclusions = f'''# Task 3.0 Conclusions — Working Set Size Survey
 
 ## Next Stage
 
-- Stage 3.1: Generate area_map files (sort_heat / first_touch) using per-benchmark K values
-- K = min(WSS / 3, 262144) from this stage's pages.jsonl
+- Stage 3.1: Generate area_map files (random / sort_heat / first_touch)
+- DRAM:CXL=1:2 is derived directly by the area_map generator from each trace's distinct pages
+- This stage's pages.jsonl is retained as an informational WSS survey, not as a required K input
 '''
 with open('$PLANS_DIR/CONCLUSIONS.md', 'w') as f:
     f.write(conclusions)

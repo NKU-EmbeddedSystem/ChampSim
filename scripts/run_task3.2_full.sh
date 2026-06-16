@@ -7,7 +7,6 @@ STAGE_DIR="$(dirname "$SCRIPT_DIR")"
 TRACE_DIR="$STAGE_DIR/trace"
 ARTIFACTS_DIR="$STAGE_DIR/artifacts"
 PLANS_DIR="$ARTIFACTS_DIR/plans/task3.2-full"
-TASK30_DATA="$ARTIFACTS_DIR/runs/task3.0-prep-pagecount/latest/pages.jsonl"
 AMAP_DIR="$ARTIFACTS_DIR/runs/task3.1-gen-areamaps/latest"
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$ARTIFACTS_DIR/runs/task3.2-full/$RUN_TS"
@@ -55,22 +54,6 @@ cd "$STAGE_DIR"
 cp replacement/lru.llc_repl replacement/llc_replacement.cc 2>/dev/null || true
 
 # ------------------------------------------------------------------
-# Load K values from Task 3.0
-# ------------------------------------------------------------------
-declare -A DRAM_PAGES
-if [ -f "$TASK30_DATA" ]; then
-  while IFS= read -r line; do
-    bmark=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['benchmark'])" 2>/dev/null)
-    wss=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['num_pages'])" 2>/dev/null)
-    k=$(python3 -c "print(int(min($wss * 0.3, 262144)))" 2>/dev/null)
-    [ -n "$bmark" ] && DRAM_PAGES[$bmark]=$k
-  done < "$TASK30_DATA"
-  echo "Loaded K values for ${#DRAM_PAGES[@]} benchmarks"
-else
-  echo "WARNING: Task 3.0 data not found at $TASK30_DATA — using default K=262144"
-fi
-
-# ------------------------------------------------------------------
 # Benchmark list (12 unique workloads)
 # ------------------------------------------------------------------
 declare -A BENCHMARKS
@@ -116,6 +99,7 @@ cat > "$RUN_DIR/main.log" << EOF
   Configs:     ${#CONFIGS_PM[@]} (placements × migrations)
   Policies:    ${POLICIES[*]}
   Warmup:      50M  |  Sim: 100M
+  DRAM:CXL:    1:2 by area_map distinct 4KB pages
   Workers:     $MAX_PARALLEL
   Started:     $(date '+%Y-%m-%d %H:%M:%S')
   Run dir:     $RUN_DIR
@@ -124,6 +108,22 @@ cat > "$RUN_DIR/main.log" << EOF
 
 EOF
 
+missing_maps=0
+for wl in "${!BENCHMARKS[@]}"; do
+  for placement in random sort_heat first_touch; do
+    amap="$AMAP_DIR/${wl}_${placement}.amap"
+    if [ ! -f "$amap" ]; then
+      echo "MISSING area_map: $amap" >> "$RUN_DIR/main.log"
+      missing_maps=$((missing_maps+1))
+    fi
+  done
+done
+if [ "$missing_maps" -ne 0 ]; then
+  echo "FATAL: missing $missing_maps area_map files. Run scripts/run_task3.1_gen_areamaps.sh first." | tee -a "$RUN_DIR/main.log"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE DONE  stage=task3.2-full  pass=0  fail=$total  result=missing_area_maps" >> "$RUN_DIR/execution.log"
+  exit 1
+fi
+
 # ══════════════════════════════════════════════════════════
 #  Dispatch
 # ══════════════════════════════════════════════════════════
@@ -131,7 +131,6 @@ running=0; idx=0
 for wl in "${!BENCHMARKS[@]}"; do
   trace_name="${BENCHMARKS[$wl]}"
   TRACE="$TRACE_DIR/${trace_name}.trace.xz"
-  k=${DRAM_PAGES[$wl]:-262144}
 
   for cfg in "${CONFIGS_PM[@]}"; do
     # Parse placement_migration
@@ -146,18 +145,12 @@ for wl in "${!BENCHMARKS[@]}"; do
     fi
 
     # Build area_map path and migration args
-    area_args=""
-    if [ "$placement" != "baseline" ]; then
-      amap="$AMAP_DIR/${wl}_${placement}.amap"
-      if [ -f "$amap" ]; then
-        area_args="--area_map=$amap --dram_pages=$k"
-      else
-        echo "WARNING: area_map not found: $amap — falling back to random"
-      fi
-    fi
-
-    mig_args=""
-    [ "$migration" != "none" ] && mig_args="--migration=$migration"
+    run_args=()
+    map_placement="$placement"
+    [ "$map_placement" = "baseline" ] && map_placement="random"
+    amap="$AMAP_DIR/${wl}_${map_placement}.amap"
+    run_args+=("-a" "$amap")
+    [ "$migration" != "none" ] && run_args+=("-m" "$migration")
 
     for pol in "${POLICIES[@]}"; do
       idx=$((idx+1))
@@ -176,7 +169,7 @@ for wl in "${!BENCHMARKS[@]}"; do
         ./bin/${bin_name} \
           -warmup_instructions 50000000 \
           -simulation_instructions 100000000 \
-          ${area_args} ${mig_args} \
+          "${run_args[@]}" \
           -traces "$TRACE" \
           > "$RUN_DIR/${name}.raw" 2>&1
         rc=$?; t1=$(date +%s%3N); elapsed=$((t1-t0))
@@ -202,8 +195,8 @@ wait
 # ══════════════════════════════════════════════════════════
 #  Results summary
 # ══════════════════════════════════════════════════════════
-pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
-fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
+pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || true)
+fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || true)
 
 cat >> "$RUN_DIR/main.log" << EOF
 

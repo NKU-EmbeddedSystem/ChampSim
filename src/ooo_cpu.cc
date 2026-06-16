@@ -2,6 +2,7 @@
 
 #include "memory_mapper.h"
 #include "ooo_cpu.h"
+#include "page_migration.h"
 #include "set.h"
 #include "vmem.h"
 
@@ -11,6 +12,15 @@ uint64_t current_core_cycle[NUM_CPUS], stall_cycle[NUM_CPUS];
 uint32_t SCHEDULING_LATENCY = 0, EXEC_LATENCY = 0, DECODE_LATENCY = 0;
 
 extern VirtualMemory vmem;
+extern PageMigrationEngine page_migration;
+
+static inline void record_page_migration_access(uint64_t vaddr, uint32_t cpu) {
+  if (!page_migration.isActive() || vaddr == 0) return;
+
+  bool in_roi = warmup_complete[cpu] && !simulation_complete[cpu];
+  page_migration.recordAccess(vaddr >> LOG2_PAGE_SIZE, in_roi);
+  if (in_roi) page_migration.maybeMigrate(current_core_cycle[cpu]);
+}
 
 void O3_CPU::initialize_core() {}
 
@@ -111,6 +121,17 @@ uint32_t O3_CPU::init_instruction(ooo_model_instr arch_instr) {
       arch_instr.num_reg_ops++;
     if (arch_instr.source_memory[i])
       arch_instr.num_mem_ops++;
+  }
+
+  if (page_migration.isActive()) {
+    for (uint32_t i = 0; i < MAX_INSTR_DESTINATIONS; i++) {
+      if (arch_instr.destination_memory[i])
+        record_page_migration_access(arch_instr.destination_memory[i], cpu);
+    }
+    for (uint32_t i = 0; i < NUM_INSTR_SOURCES; i++) {
+      if (arch_instr.source_memory[i])
+        record_page_migration_access(arch_instr.source_memory[i], cpu);
+    }
   }
 
   if (arch_instr.num_mem_ops > 0)

@@ -4,23 +4,15 @@ set -uo pipefail
 
 STAGE_DIR="$(cd "$(dirname "$0")" && pwd)/.."
 TRACE_DIR="$STAGE_DIR/trace"
-AMAP_DIR="$STAGE_DIR/artifacts/runs/task3.1-gen-areamaps/latest"
-TASK30_DATA="$STAGE_DIR/artifacts/runs/task3.0-prep-pagecount/latest/pages.jsonl"
+AMAP_DIR="${AMAP_DIR:-$STAGE_DIR/artifacts/runs/task3.1-gen-areamaps/latest}"
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$STAGE_DIR/artifacts/runs/task3.3-cross-compare/$RUN_TS"
-MAX_PARALLEL=64
+MAX_PARALLEL="${MAX_PARALLEL:-48}"
+WARMUP_INSTRUCTIONS="${WARMUP_INSTRUCTIONS:-50000000}"
+SIMULATION_INSTRUCTIONS="${SIMULATION_INSTRUCTIONS:-100000000}"
 
 mkdir -p "$RUN_DIR"
-
-# ── Load K values ──
-declare -A K
-if [ -f "$TASK30_DATA" ]; then
-  while IFS= read -r line; do
-    bmark=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['benchmark'])" 2>/dev/null)
-    wss=$(echo "$line" | python3 -c "import json,sys; print(json.load(sys.stdin)['num_pages'])" 2>/dev/null)
-    K[$bmark]=$(python3 -c "print(int(min($wss / 3, 262144)))" 2>/dev/null)
-  done < "$TASK30_DATA"
-fi
+ln -sfn "$RUN_TS" "$STAGE_DIR/artifacts/runs/task3.3-cross-compare/latest"
 
 # ── Benchmarks ──
 declare -A TRACES
@@ -57,32 +49,64 @@ cat > "$RUN_DIR/main.log" << EOF
 ══════════════════════════════════════════════════════════
   Task 3.3 Cross Compare — 10 Configs × 3 Policies
   Benchmarks: ${#TRACES[@]}  Configs: ${#CONFIGS[@]}  Policies: ${#POLICIES[@]}
-  Warmup: 50M  Sim: 100M  DRAM:CXL = 1:2
+  Warmup: $WARMUP_INSTRUCTIONS  Sim: $SIMULATION_INSTRUCTIONS  DRAM:CXL = 1:2
+  Area maps: $AMAP_DIR
   Workers: $MAX_PARALLEL  Tasks: $TOTAL
   Started: $(date '+%Y-%m-%d %H:%M:%S')
 ══════════════════════════════════════════════════════════
 
 EOF
 
+missing_maps=0
+for wl in "${!TRACES[@]}"; do
+  for placement in random sort_heat first_touch; do
+    amap="$AMAP_DIR/${wl}_${placement}.amap"
+    if [ ! -f "$amap" ]; then
+      echo "MISSING area_map: $amap" >> "$RUN_DIR/main.log"
+      missing_maps=$((missing_maps+1))
+    fi
+  done
+done
+if [ "$missing_maps" -ne 0 ]; then
+  echo "FATAL: missing $missing_maps area_map files. Run scripts/run_task3.1_gen_areamaps.sh first." | tee -a "$RUN_DIR/main.log"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE DONE stage=task3.3-cross-compare pass=0 fail=$TOTAL result=missing_area_maps" >> "$RUN_DIR/execution.log"
+  exit 1
+fi
+
+missing_bins=0
+for l1d in no ipcp; do
+  for l2c in no ip_stride; do
+    for pol in "${POLICIES[@]}"; do
+      bin="$STAGE_DIR/bin/hashed_perceptron-no-${l1d}-${l2c}-no-${pol}-1core"
+      if [ ! -x "$bin" ]; then
+        echo "MISSING binary: $bin" >> "$RUN_DIR/main.log"
+        missing_bins=$((missing_bins+1))
+      fi
+    done
+  done
+done
+if [ "$missing_bins" -ne 0 ]; then
+  echo "FATAL: missing $missing_bins binaries. Build the 4 prefetcher combos × 3 policies first." | tee -a "$RUN_DIR/main.log"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE DONE stage=task3.3-cross-compare pass=0 fail=$TOTAL result=missing_binaries" >> "$RUN_DIR/execution.log"
+  exit 1
+fi
+
 running=0; idx=0
 for wl in "${!TRACES[@]}"; do
   tname="${TRACES[$wl]}"
   TRACE="$TRACE_DIR/${tname}.trace.xz"
-  kv=${K[$tname]:-262144}
 
   for cfg in "${CONFIGS[@]}"; do
     read placement migration l1d l2c label <<< "$cfg"
 
     # Binary name
-    bin="$STAGE_DIR/bin/hp-${l1d}-${l2c}-no-{pol}-1core"
+    bin="$STAGE_DIR/bin/hashed_perceptron-no-${l1d}-${l2c}-no-{pol}-1core"
 
     # Args
-    extra_args=""
-    if [ "$placement" != "random" ]; then
-      amap="$AMAP_DIR/${wl}_${placement}.amap"
-      [ -f "$amap" ] && extra_args="--area_map=$amap --dram_pages=$kv"
-    fi
-    [ "$migration" != "none" ] && extra_args="$extra_args --migration=${migration}"
+    extra_args=()
+    amap="$AMAP_DIR/${wl}_${placement}.amap"
+    extra_args+=("-a" "$amap")
+    [ "$migration" != "none" ] && extra_args+=("-m" "$migration")
 
     for pol in "${POLICIES[@]}"; do
       idx=$((idx+1))
@@ -94,12 +118,12 @@ for wl in "${!TRACES[@]}"; do
 
       (
         t0=$(date +%s%3N)
-        "$bin_path" -warmup_instructions 50000000 -simulation_instructions 100000000 \
-          $extra_args -traces "$TRACE" > "$RUN_DIR/${name}.raw" 2>&1
+        "$bin_path" -warmup_instructions "$WARMUP_INSTRUCTIONS" -simulation_instructions "$SIMULATION_INSTRUCTIONS" \
+          "${extra_args[@]}" -traces "$TRACE" > "$RUN_DIR/${name}.raw" 2>&1
         rc=$?; t1=$(date +%s%3N); elapsed=$((t1-t0))
 
         if [ $rc -eq 0 ] && grep -q "Finished CPU" "$RUN_DIR/${name}.raw" 2>/dev/null; then
-          ipc=$(grep "cumulative IPC" "$RUN_DIR/${name}.raw" | tail -1 | awk '{print $NF}')
+          ipc=$(grep "CPU 0 cumulative IPC" "$RUN_DIR/${name}.raw" | tail -1 | awk '{for (i=1; i<=NF; i++) if ($i == "IPC:") {print $(i+1); exit}}')
           echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] TASK DONE name=$name exit=0 elapsed_ms=$elapsed ipc=$ipc" >> "$RUN_DIR/execution.log"
           echo "  OK ipc=$ipc elapsed=${elapsed}ms" > "$RUN_DIR/${name}.sub.log"
         else
@@ -115,8 +139,8 @@ for wl in "${!TRACES[@]}"; do
 done
 wait
 
-pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
-fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || echo 0)
+pass=$(grep -c "TASK DONE.*exit=0" "$RUN_DIR/execution.log" 2>/dev/null || true)
+fail=$(grep -c "result=failed" "$RUN_DIR/execution.log" 2>/dev/null || true)
 echo "[$(date -u +%Y-%m-%dT%H:%M:%S)] STAGE DONE stage=task3.3-cross-compare pass=$pass fail=$fail" >> "$RUN_DIR/execution.log"
 ln -sfn "$RUN_TS" "$STAGE_DIR/artifacts/runs/task3.3-cross-compare/latest"
 

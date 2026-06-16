@@ -21,7 +21,7 @@ uint64_t warmup_instructions = 1000000, simulation_instructions = 10000000,
 
 std::string area_map_path;
 std::string migration_mode_str = "none";
-uint64_t dram_pages = 262144;
+uint64_t dram_pages = 0;
 PageMigrationEngine page_migration;
 TracePageBuffer *g_trace_page_buffer = nullptr;
 
@@ -860,6 +860,8 @@ int main(int argc, char **argv) {
                                              // when all cores are warmed up
         all_warmup_complete++;
         finish_warmup();
+        if (page_migration.usesForwardLookahead())
+          page_migration.forceMigrate(current_core_cycle[i]);
       }
 
       /*

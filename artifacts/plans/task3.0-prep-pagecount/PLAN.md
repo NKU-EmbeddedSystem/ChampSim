@@ -4,7 +4,7 @@
 
 ## Goal
 
-统计 ChampSim trace 中所有 benchmark 的 distinct 4KB page 数量，为 Stage 3 placement 策略的 `--dram_pages` 参数提供数据支撑。
+统计 ChampSim trace 中所有 benchmark 的 distinct 4KB page 数量，作为工作集规模 survey。Stage 3 placement 的 DRAM:CXL=1:2 分配由 area_map 生成器直接从 trace distinct pages 自动推导，不再依赖本阶段输出作为 `--dram_pages` 输入。
 
 ## Fixed Parameters
 
@@ -14,7 +14,7 @@
 | 统计粒度 | `addr / 4096` 去重 |
 | Trace 格式 | ChampSim input_instr (64-byte records, gz/xz compressed) |
 | 内存地址来源 | source_memory[4] + destination_memory[2] |
-| DRAM pages 公式 | `min(WSS × 0.3, 262144)` |
+| DRAM pages 公式 | 信息性统计：`floor(WSS / 3)`；实验运行不从本阶段读取 K |
 | MAX_PARALLEL | 8 |
 
 ## Candidates (12 unique workloads)
@@ -43,7 +43,7 @@
 1. **All traces found:** 12 个 benchmark 的 `.trace.xz` 文件均存在
 2. **Non-zero WSS:** 每个 benchmark 的 `num_pages > 0`
 3. **Results sorted:** `pages.jsonl` 按 WSS 升序排列
-4. **DRAM pages capped:** `dram_pages` 不超过 262144
+4. **Informational DRAM pages:** 输出 `floor(WSS / 3)` 仅用于记录，不作为 Stage 3.1/3.3 输入
 
 ## How to Run
 
