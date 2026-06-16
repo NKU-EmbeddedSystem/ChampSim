@@ -1,0 +1,1 @@
+../../scripts/run_task3.1_gen_areamaps.sh
