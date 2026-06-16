@@ -3,6 +3,9 @@
 #include "ooo_cpu.h"
 #include "tracereader.h"
 #include "uncore.h"
+#include "memory_mapper.h"
+#include "page_migration.h"
+#include "trace_page_buffer.h"
 
 #include <fstream>
 #include <getopt.h>
@@ -15,6 +18,12 @@ uint8_t warmup_complete[NUM_CPUS], simulation_complete[NUM_CPUS],
 
 uint64_t warmup_instructions = 1000000, simulation_instructions = 10000000,
          champsim_seed;
+
+std::string area_map_path;
+std::string migration_mode_str = "none";
+uint64_t dram_pages = 262144;
+PageMigrationEngine page_migration;
+TracePageBuffer *g_trace_page_buffer = nullptr;
 
 time_t start_time;
 
@@ -466,7 +475,7 @@ int main(int argc, char **argv) {
 
     int option_index = 0;
 
-    c = getopt_long_only(argc, argv, "wihsb", long_options, &option_index);
+    c = getopt_long_only(argc, argv, "wihsba:m:d:", long_options, &option_index);
 
     // no more option characters
     if (c == -1)
@@ -493,6 +502,15 @@ int main(int argc, char **argv) {
       break;
     case 't':
       traces_encountered = 1;
+      break;
+    case 'a':
+      area_map_path = optarg;
+      break;
+    case 'm':
+      migration_mode_str = optarg;
+      break;
+    case 'd':
+      dram_pages = atol(optarg);
       break;
     default:
       abort();
@@ -596,6 +614,26 @@ int main(int argc, char **argv) {
     assert(0);
   }
   // end trace file setup
+
+  // ---- Area map + migration init ----
+  if (!area_map_path.empty()) {
+    MemoryMapper::get_instance().load_area_map(area_map_path);
+  }
+  MigrationMode mm = MigrationMode::NONE;
+  if (migration_mode_str == "forward") mm = MigrationMode::FORWARD;
+  else if (migration_mode_str == "backward") mm = MigrationMode::BACKWARD;
+  else if (migration_mode_str == "forward_lazy") mm = MigrationMode::FORWARD_LAZY;
+  else if (migration_mode_str == "backward_lazy") mm = MigrationMode::BACKWARD_LAZY;
+  page_migration.init(mm, dram_pages, MemoryMapper::get_instance().get_area_map_4k());
+  if (mm == MigrationMode::FORWARD || mm == MigrationMode::FORWARD_LAZY) {
+    std::string tp = traces[0]->get_trace_path();
+    g_trace_page_buffer = new TracePageBuffer();
+    g_trace_page_buffer->start(tp);
+    g_trace_page_buffer->waitUntilReady(2000000, 60);
+    page_migration.setPageBuffer(g_trace_page_buffer);
+    std::cerr << "[main] TracePageBuffer ready\n";
+  }
+  // ---- End init ----
 
   // TODO: can we initialize these variables from the class constructor?
   srand(seed_number);
@@ -1000,6 +1038,16 @@ int main(int argc, char **argv) {
        << " misses, " << uncore.LLC.llc_access_by_area[2] << " accesses" << endl;
   print_dram_stats();
   print_branch_stats();
+
+  // Per-area access & eviction breakdown
+  cout << endl << "Per-Area Access & Eviction (sim phase):" << endl;
+  cout << "  DRAM accesses: " << uncore.LLC.sim_dram_accesses
+       << "  CXL accesses: " << uncore.LLC.sim_cxl_accesses << endl;
+  uint64_t tot = uncore.LLC.sim_dram_accesses + uncore.LLC.sim_cxl_accesses;
+  if (tot > 0)
+    cout << "  DRAM access ratio: " << (double)uncore.LLC.sim_dram_accesses/tot << endl;
+  cout << "  DRAM evictions: " << uncore.LLC.sim_dram_evictions
+       << "  CXL evictions: " << uncore.LLC.sim_cxl_evictions << endl;
 #endif
 
   return 0;

@@ -8,7 +8,7 @@ inc = inc
 
 debug = 1
 
-CFlags = -Wall -O3 -std=c++11
+CFlags = -Wall -O3 -std=c++14
 LDFlags =
 libs =
 libDir =
@@ -25,7 +25,7 @@ inc := $(addprefix -I,$(inc))
 libs := $(addprefix -l,$(libs))
 libDir := $(addprefix -L,$(libDir))
 CFlags += -c $(debug) $(inc) $(libDir) $(libs)
-sources := $(shell find $(srcDir) -name '*.$(srcExt)')
+sources := $(shell find $(srcDir) -name '*.$(srcExt)' ! -path '*/tools/*')
 srcDirs := $(shell find . -name '*.$(srcExt)' -exec dirname {} \; | uniq)
 objects := $(patsubst %.$(srcExt),$(objDir)/%.o,$(sources))
 
