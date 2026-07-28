@@ -157,6 +157,7 @@ public:
   uint32_t cpu = 0;
   std::string NAME;
   uint32_t NUM_SET, NUM_WAY, MSHR_SIZE;
+  bool next_block_partition = false; // false=LRU partition, true=EMISSARY partition
   std::size_t PQ_SIZE;
   champsim::chrono::clock::duration HIT_LATENCY;
   champsim::chrono::clock::duration FILL_LATENCY;

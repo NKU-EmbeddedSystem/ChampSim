@@ -32,6 +32,13 @@
 #include "util/bits.h"
 #include "util/span.h"
 
+// EMISSARY: deterministic P-bit filter (1/32 probability via address hash)
+static bool emissary_priority_filter(champsim::address addr)
+{
+  uint64_t hash = addr.to<uint64_t>() >> 6;
+  return (hash & 0x1F) == 0; // 1/32 probability
+}
+
 CACHE::CACHE(CACHE&& other)
     : operable(other),
 
@@ -170,6 +177,12 @@ bool CACHE::handle_fill(const fill_type& fill)
 {
   cpu = fill.cpu;
 
+  // EMISSARY Phase 2: set partition before victim selection
+  if (NAME == "L2C") {
+    bool starvation = (fill.data_promise->pf_metadata & 0x1) != 0;
+    next_block_partition = starvation && emissary_priority_filter(fill.address);
+  }
+
   // find victim
   auto [set_begin, set_end] = get_set_span(fill.address);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
@@ -229,6 +242,14 @@ bool CACHE::handle_fill(const fill_type& fill)
     }
 
     *way = fill_block(fill, metadata_thru);
+
+    // EMISSARY: set P-bit on fills that carry the starvation signal
+    if (NAME.find("L1I") != std::string::npos || NAME == "L2C") {
+      bool starvation = (fill.data_promise->pf_metadata & 0x1) != 0;
+      if (starvation && emissary_priority_filter(way->address)) {
+        way->priority = true;
+      }
+    }
   }
 
   // COLLECT STATS
@@ -272,6 +293,14 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+
+    // EMISSARY: set P-bit on L2 hits for requests carrying the starvation signal
+    if (NAME == "L2C") {
+      bool starvation = (handle_pkt.pf_metadata & 0x1) != 0;
+      if (starvation && emissary_priority_filter(way->address)) {
+        way->priority = true;
+      }
+    }
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {

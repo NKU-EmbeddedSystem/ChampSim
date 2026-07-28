@@ -25,6 +25,7 @@ struct cache_block {
   bool valid = false;
   bool prefetch = false;
   bool dirty = false;
+  bool priority = false; // EMISSARY P-bit: set on I-cache lines fetched during decode starvation
 
   champsim::address address{};
   champsim::address v_address{};

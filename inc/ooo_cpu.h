@@ -139,6 +139,9 @@ public:
   // branch
   champsim::chrono::clock::time_point fetch_resume_time{};
 
+  // EMISSARY: decode starvation tracking
+  bool starved_this_cycle = false;
+
   const long IN_QUEUE_SIZE;
   std::deque<ooo_model_instr> input_queue;
 

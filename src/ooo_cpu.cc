@@ -253,6 +253,8 @@ bool O3_CPU::do_fetch_instruction(std::deque<ooo_model_instr>::iterator begin, s
   fetch_packet.v_address = begin->ip;
   fetch_packet.instr_id = begin->instr_id;
   fetch_packet.ip = begin->ip;
+  // EMISSARY: set starvation bit in pf_metadata for L1I/L2 P-bit logic
+  fetch_packet.pf_metadata = starved_this_cycle ? 0x1 : 0x0;
 
   std::transform(begin, end, std::back_inserter(fetch_packet.instr_depend_on_me), [](const auto& instr) { return instr.instr_id; });
 
@@ -379,6 +381,18 @@ long O3_CPU::decode_instruction()
              ooo_model_instr::program_order);
   DECODE_BUFFER.erase(decode_buffer_begin, decode_buffer_end);
   DIB_HIT_BUFFER.erase(dib_hit_buffer_begin, dib_hit_buffer_end);
+
+  // EMISSARY: detect decode starvation
+  // Starvation = decode bandwidth not fully utilized AND I-cache misses pending
+  starved_this_cycle = false;
+  if (progress < static_cast<long>(DECODE_WIDTH)) {
+    auto pending_fetch = std::any_of(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER),
+                                     [](const auto& x) { return !x.fetch_completed && x.dib_checked; });
+    if (pending_fetch) {
+      starved_this_cycle = true;
+      roi_stats.decode_starvation_cycles++;
+    }
+  }
 
   return progress;
 }
