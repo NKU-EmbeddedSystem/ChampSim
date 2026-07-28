@@ -104,7 +104,9 @@ auto PageTableWalker::step_translation(const mshr_type& source) -> std::optional
   request_type packet;
   packet.address = source.address;
   packet.v_address = source.v_address;
-  packet.pf_metadata = source.pf_metadata;
+  // Page-table reads are ordinary memory traffic, not TLB-chain lookups: clear the chain
+  // flag so that data caches on the read path do not serve them from translation lines.
+  packet.pf_metadata = source.pf_metadata & ~champsim::TLB_CHAIN_PF_FLAG;
   packet.cpu = source.cpu;
   packet.asid[0] = source.asid[0];
   packet.asid[1] = source.asid[1];

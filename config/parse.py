@@ -366,8 +366,21 @@ class NormalizedConfiguration:
                 **module_parse(mod_name, prefetcher_context)
             }
 
-        tlb_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[2:])))
-        data_path = itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2])))
+        data_path = list(itertools.chain(*(util.iter_system(caches, name) for name in itertools.chain(*path_root_names[:2]))))
+        data_path_names = {c['name'] for c in data_path}
+
+        def tlb_path_iter(name):
+            '''Follow the TLB chain until it merges into the data path.
+
+            A data cache may serve translation lookups (e.g. an L2C holding TLB-chain
+            lines); such a cache and everything below it keeps block offsets.
+            '''
+            for elem in util.iter_system(caches, name):
+                if elem['name'] in data_path_names:
+                    break
+                yield elem
+
+        tlb_path = itertools.chain(*(tlb_path_iter(name) for name in itertools.chain(*path_root_names[2:])))
         caches = util.combine_named(
             # Set prefetcher_activate
             ({ 'name': k,

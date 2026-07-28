@@ -31,10 +31,16 @@ def ptw_core_defaults(cpu):
 
 def list_defaults_for_core(cpu, caches):
     ''' Generate the down-path defaults that a default core would expect '''
-    icache_path = itertools.tee(util.iter_system(caches, cpu.get('L1I')), 2)
-    dcache_path = itertools.tee(util.iter_system(caches, cpu.get('L1D')), 2)
-    itlb_path = itertools.tee(util.iter_system(caches, cpu.get('ITLB')), 2)
-    dtlb_path = itertools.tee(util.iter_system(caches, cpu.get('DTLB')), 2)
+    icache_path = list(util.iter_system(caches, cpu.get('L1I')))
+    dcache_path = list(util.iter_system(caches, cpu.get('L1D')))
+    itlb_path = list(util.iter_system(caches, cpu.get('ITLB')))
+    dtlb_path = list(util.iter_system(caches, cpu.get('DTLB')))
+
+    # A translation chain may merge into the data path (e.g. an L2C serving translation
+    # lookups). Only the page-granular prefix of a TLB chain takes part in translator wiring.
+    data_path_names = {c['name'] for c in itertools.chain(icache_path, dcache_path)}
+    itlb_tlb_only = list(itertools.takewhile(lambda c: c['name'] not in data_path_names, itlb_path))
+    dtlb_tlb_only = list(itertools.takewhile(lambda c: c['name'] not in data_path_names, dtlb_path))
 
     l1i_members = (
         { '_first_level': True, '_is_instruction_cache': True,
@@ -63,12 +69,12 @@ def list_defaults_for_core(cpu, caches):
         return {'name': cache['name'], 'lower_translate': tlb['name']}
 
     return (
-        map(util.chain, icache_path[0], l1i_members), #L1I path
-        map(util.chain, dcache_path[0], l1d_members), #L1D path
-        map(util.chain, itlb_path[0], itlb_members), #ITLB path
-        map(util.chain, dtlb_path[0], dtlb_members), #DTLB path
-        map(connect_translator, icache_path[1], itlb_path[1]), #L1I translation path
-        map(connect_translator, dcache_path[1], dtlb_path[1]) #L1D translation path
+        map(util.chain, icache_path, l1i_members), #L1I path
+        map(util.chain, dcache_path, l1d_members), #L1D path
+        map(util.chain, itlb_tlb_only, itlb_members), #ITLB path
+        map(util.chain, dtlb_tlb_only, dtlb_members), #DTLB path
+        map(connect_translator, icache_path, itlb_tlb_only), #L1I translation path
+        map(connect_translator, dcache_path, dtlb_tlb_only) #L1D translation path
     )
 
 # Round-Robin recipe from itertools

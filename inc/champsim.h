@@ -39,6 +39,11 @@ struct deadlock : public std::exception {
   explicit deadlock(uint32_t cpu) : which(cpu) {}
 };
 
+// pf_metadata flag: this packet travels the TLB chain (ITLB/DTLB -> STLB -> ... -> PTW).
+// Page-granular caches (TLBs) set it on forwarded misses; intermediate data caches
+// (e.g. L2C) use it to serve the lookup from translation lines instead of data lines.
+constexpr uint32_t TLB_CHAIN_PF_FLAG = 0x4;
+
 #ifdef DEBUG_PRINT
 constexpr bool debug_print = true;
 #else

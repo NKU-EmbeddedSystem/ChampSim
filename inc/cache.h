@@ -66,7 +66,6 @@ class CACHE : public champsim::operable
 
     uint32_t pf_metadata;
     uint32_t cpu;
-
     access_type type;
     bool prefetch_from_this;
     bool skip_fill;
@@ -90,6 +89,7 @@ public:
     champsim::address v_address;
     champsim::address ip;
     uint64_t instr_id;
+    uint32_t pf_metadata = 0;
 
     struct returned_value {
       champsim::address data;
@@ -133,6 +133,11 @@ private:
   [[nodiscard]] std::pair<set_type::const_iterator, set_type::const_iterator> get_set_span(champsim::address address) const;
   [[nodiscard]] long get_set_index(champsim::address address) const;
 
+  // TLB-chain support: page-granular variants used when serving translation lookups from this cache
+  std::pair<set_type::iterator, set_type::iterator> get_set_span(champsim::address address, bool page_granular);
+  [[nodiscard]] std::pair<set_type::const_iterator, set_type::const_iterator> get_set_span(champsim::address address, bool page_granular) const;
+  [[nodiscard]] long get_set_index(champsim::address address, bool page_granular) const;
+
   template <typename T>
   bool should_activate_prefetcher(const T& pkt) const;
 
@@ -143,6 +148,9 @@ private:
   champsim::address module_address(const T& element) const;
 
   auto matches_address(champsim::address address) const;
+  // Class-aware matchers: data lookups must not match TLB-chain lines and vice versa
+  auto matches_data_line(champsim::address address) const;
+  auto matches_tlb_line(champsim::address address) const;
   std::pair<fill_type, request_type> mshr_and_forward_packet(const tag_lookup_type& handle_pkt);
 
   std::deque<tag_lookup_type> internal_PQ{};

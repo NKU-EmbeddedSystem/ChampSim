@@ -39,6 +39,9 @@ static bool emissary_priority_filter(champsim::address addr)
   return (hash & 0x1F) == 0; // 1/32 probability
 }
 
+// TLB-chain support: a packet is a translation lookup if the TLB that forwarded it marked it
+static bool is_tlb_chain_packet(uint32_t pf_metadata) { return (pf_metadata & champsim::TLB_CHAIN_PF_FLAG) != 0; }
+
 CACHE::CACHE(CACHE&& other)
     : operable(other),
 
@@ -106,7 +109,7 @@ CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref
 }
 
 CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
-    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
+    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
 }
@@ -154,7 +157,10 @@ auto CACHE::fill_block(fill_type fill, uint32_t metadata) -> BLOCK
   to_fill.address = fill.address;
   to_fill.v_address = fill.v_address;
   to_fill.data = fill.data_promise->data;
-  to_fill.pf_metadata = metadata;
+  // The line's class (data vs TLB-chain) is determined by the request that allocated the
+  // fill, not by response metadata: a TLB fills its line with a translation even though the
+  // downstream response carries the chain flag.
+  to_fill.pf_metadata = (metadata & ~champsim::TLB_CHAIN_PF_FLAG) | (fill.pf_metadata & champsim::TLB_CHAIN_PF_FLAG);
 
   return to_fill;
 }
@@ -163,6 +169,22 @@ auto CACHE::matches_address(champsim::address addr) const
 {
   return [match = addr.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS](const auto& entry) {
     return entry.address.slice_upper(shamt) == match;
+  };
+}
+
+// Data lookups match at this cache's offset granularity and must not match TLB-chain lines
+auto CACHE::matches_data_line(champsim::address addr) const
+{
+  return [match = addr.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS](const auto& entry) {
+    return (entry.pf_metadata & champsim::TLB_CHAIN_PF_FLAG) == 0 && entry.address.slice_upper(shamt) == match;
+  };
+}
+
+// Translation lookups match at page granularity and only against TLB-chain lines
+auto CACHE::matches_tlb_line(champsim::address addr) const
+{
+  return [match = champsim::page_number{addr}](const auto& entry) {
+    return (entry.pf_metadata & champsim::TLB_CHAIN_PF_FLAG) != 0 && champsim::page_number{entry.address} == match;
   };
 }
 
@@ -177,6 +199,8 @@ bool CACHE::handle_fill(const fill_type& fill)
 {
   cpu = fill.cpu;
 
+  const bool tlb_chain_fill = is_tlb_chain_packet(fill.pf_metadata);
+
   // EMISSARY Phase 2: set partition before victim selection
   if (NAME == "L2C") {
     bool starvation = (fill.data_promise->pf_metadata & 0x1) != 0;
@@ -184,10 +208,11 @@ bool CACHE::handle_fill(const fill_type& fill)
   }
 
   // find victim
-  auto [set_begin, set_end] = get_set_span(fill.address);
+  auto [set_begin, set_end] = get_set_span(fill.address, tlb_chain_fill);
   auto way = std::find_if_not(set_begin, set_end, [](auto x) { return x.valid; });
   if (way == set_end) {
-    way = std::next(set_begin, impl_find_victim(fill.cpu, fill.instr_id, get_set_index(fill.address), &*set_begin, fill.ip, fill.address, fill.type));
+    way = std::next(set_begin,
+                    impl_find_victim(fill.cpu, fill.instr_id, get_set_index(fill.address, tlb_chain_fill), &*set_begin, fill.ip, fill.address, fill.type));
   }
   assert(set_begin <= way);
   assert(way <= set_end);
@@ -228,9 +253,9 @@ bool CACHE::handle_fill(const fill_type& fill)
     evicting_address = module_address(*way);
   }
 
-  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill), get_set_index(fill.address), way_idx, (fill.type == access_type::PREFETCH),
+  auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill), get_set_index(fill.address, tlb_chain_fill), way_idx, (fill.type == access_type::PREFETCH),
                                                   evicting_address, fill.data_promise->pf_metadata);
-  impl_replacement_cache_fill(fill.cpu, get_set_index(fill.address), way_idx, module_address(fill), fill.ip, evicting_address, fill.type);
+  impl_replacement_cache_fill(fill.cpu, get_set_index(fill.address, tlb_chain_fill), way_idx, module_address(fill), fill.ip, evicting_address, fill.type);
 
   if (way != set_end) {
     if (way->valid && way->prefetch) {
@@ -269,15 +294,24 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
 
+  const bool tlb_chain = is_tlb_chain_packet(handle_pkt.pf_metadata);
+  // TLBs keep counting chain traffic in the regular buckets; data caches count it separately
+  const bool count_tlb_separately = tlb_chain && OFFSET_BITS != champsim::data::bits{LOG2_PAGE_SIZE};
+
   // access cache
-  auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  auto [set_begin, set_end] = get_set_span(handle_pkt.address, tlb_chain);
+  set_type::iterator way;
+  if (tlb_chain) {
+    way = std::find_if(set_begin, set_end, [matcher = matches_tlb_line(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  } else {
+    way = std::find_if(set_begin, set_end, [matcher = matches_data_line(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  }
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} data: {} set: {} way: {} ({}) type: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
-               handle_pkt.address, handle_pkt.v_address, handle_pkt.data, get_set_index(handle_pkt.address), std::distance(set_begin, way),
+               handle_pkt.address, handle_pkt.v_address, handle_pkt.data, get_set_index(handle_pkt.address, tlb_chain), std::distance(set_begin, way),
                hit ? "HIT" : "MISS", access_type_names.at(champsim::to_underlying(handle_pkt.type)), current_time.time_since_epoch() / clock_period);
   }
 
@@ -288,11 +322,15 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // update replacement policy
   const auto way_idx = std::distance(set_begin, way);
-  impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address), way_idx, module_address(handle_pkt), handle_pkt.ip, {}, handle_pkt.type,
-                                hit);
+  impl_update_replacement_state(handle_pkt.cpu, get_set_index(handle_pkt.address, tlb_chain), way_idx, module_address(handle_pkt), handle_pkt.ip, {},
+                                handle_pkt.type, hit);
 
   if (hit) {
-    sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    if (count_tlb_separately) {
+      ++sim_stats.tlb_chain_hits;
+    } else {
+      sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    }
 
     // EMISSARY: set P-bit on L2 hits for requests carrying the starvation signal
     if (NAME == "L2C") {
@@ -340,6 +378,12 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   fwd_pkt.instr_depend_on_me = handle_pkt.instr_depend_on_me;
   fwd_pkt.response_requested = (!handle_pkt.prefetch_from_this || !handle_pkt.skip_fill);
 
+  // Page-granular caches (TLBs) mark forwarded misses as traveling the TLB chain, so that
+  // downstream data caches can serve them from translation lines instead of data lines
+  if (OFFSET_BITS == champsim::data::bits{LOG2_PAGE_SIZE}) {
+    fwd_pkt.pf_metadata |= champsim::TLB_CHAIN_PF_FLAG;
+  }
+
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
 }
 
@@ -355,15 +399,26 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
 
   cpu = handle_pkt.cpu;
 
+  const bool tlb_chain = is_tlb_chain_packet(handle_pkt.pf_metadata);
+
   auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
 
-  // check mshr
-  auto fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address));
+  // check mshr (class-aware: translation lookups merge at page granularity, data at block granularity)
+  std::deque<fill_type>::iterator fill_entry;
+  if (tlb_chain) {
+    fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_tlb_line(handle_pkt.address));
+  } else {
+    fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_data_line(handle_pkt.address));
+  }
   bool mshr_full = (MSHR.size() == MSHR_SIZE);
 
   // check inflight fills
   if (fill_entry == MSHR.end()) {
-    fill_entry = std::find_if(inflight_fills.begin(), inflight_fills.end(), matches_address(handle_pkt.address));
+    if (tlb_chain) {
+      fill_entry = std::find_if(inflight_fills.begin(), inflight_fills.end(), matches_tlb_line(handle_pkt.address));
+    } else {
+      fill_entry = std::find_if(inflight_fills.begin(), inflight_fills.end(), matches_data_line(handle_pkt.address));
+    }
   }
 
   if (fill_entry != inflight_fills.end()) // miss or fill already inflight
@@ -384,8 +439,11 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
       return false;  // TODO should we allow prefetches anyway if they will not be filled to this level?
     }
 
+    // TLB-chain misses continue down the translation path; data misses go to the next data level.
+    // TLBs themselves have no lower_translate; their chain link is their lower_level.
+    channel_type* fwd_channel = (tlb_chain && lower_translate != nullptr) ? lower_translate : lower_level;
     const bool send_to_rq = (prefetch_as_load || handle_pkt.type != access_type::PREFETCH);
-    bool success = send_to_rq ? lower_level->add_rq(mshr_pkt.second) : lower_level->add_pq(mshr_pkt.second);
+    bool success = send_to_rq ? fwd_channel->add_rq(mshr_pkt.second) : fwd_channel->add_pq(mshr_pkt.second);
 
     if (!success) {
       return false;
@@ -397,7 +455,11 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
   }
 
-  sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+  if (tlb_chain && OFFSET_BITS != champsim::data::bits{LOG2_PAGE_SIZE}) {
+    ++sim_stats.tlb_chain_misses;
+  } else {
+    sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+  }
 
   return true;
 }
@@ -461,7 +523,17 @@ long CACHE::operate()
 
   // Finish translations
   if (lower_translate != nullptr) {
-    std::for_each(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned), [this](const auto& pkt) { this->finish_translation(pkt); });
+    for (const auto& pkt : lower_translate->returned) {
+      // A TLB-chain response that matches an outstanding MSHR is a translation-line fill;
+      // anything else is the completion of a pending translation (e.g. virtual prefetches)
+      bool is_chain_fill = is_tlb_chain_packet(pkt.pf_metadata)
+                           && std::find_if(std::begin(MSHR), std::end(MSHR), matches_tlb_line(pkt.address)) != std::end(MSHR);
+      if (is_chain_fill) {
+        this->finish_packet(pkt);
+      } else {
+        this->finish_translation(pkt);
+      }
+    }
     progress += std::distance(std::cbegin(lower_translate->returned), std::cend(lower_translate->returned));
     lower_translate->returned.clear();
   }
@@ -556,6 +628,14 @@ uint64_t CACHE::get_set(uint64_t address) const { return static_cast<uint64_t>(g
 
 long CACHE::get_set_index(champsim::address address) const { return address.slice(champsim::dynamic_extent{OFFSET_BITS, champsim::lg2(NUM_SET)}).to<long>(); }
 
+long CACHE::get_set_index(champsim::address address, bool page_granular) const
+{
+  if (page_granular) {
+    return address.slice(champsim::dynamic_extent{champsim::data::bits{LOG2_PAGE_SIZE}, champsim::lg2(NUM_SET)}).to<long>();
+  }
+  return get_set_index(address);
+}
+
 template <typename It>
 std::pair<It, It> get_span(It anchor, typename std::iterator_traits<It>::difference_type set_idx, typename std::iterator_traits<It>::difference_type num_way)
 {
@@ -573,6 +653,20 @@ auto CACHE::get_set_span(champsim::address address) -> std::pair<set_type::itera
 auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
 {
   const auto set_idx = get_set_index(address);
+  assert(set_idx < NUM_SET);
+  return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
+}
+
+auto CACHE::get_set_span(champsim::address address, bool page_granular) -> std::pair<set_type::iterator, set_type::iterator>
+{
+  const auto set_idx = get_set_index(address, page_granular);
+  assert(set_idx < NUM_SET);
+  return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
+}
+
+auto CACHE::get_set_span(champsim::address address, bool page_granular) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
+{
+  const auto set_idx = get_set_index(address, page_granular);
   assert(set_idx < NUM_SET);
   return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
@@ -634,8 +728,17 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 
 void CACHE::finish_packet(const response_type& packet)
 {
-  // check MSHR information
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
+  // check MSHR information (class-aware: TLB-chain responses match MSHRs at page granularity)
+  std::deque<fill_type>::iterator mshr_entry;
+  if (OFFSET_BITS == champsim::data::bits{LOG2_PAGE_SIZE}) {
+    // TLBs are homogeneous: match at page granularity without class checks. Responses
+    // arriving here may carry the chain flag even for MSHRs allocated by unflagged requests.
+    mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
+  } else if (is_tlb_chain_packet(packet.pf_metadata)) {
+    mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_tlb_line(packet.address));
+  } else {
+    mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_data_line(packet.address));
+  }
 
   // sanity check
   if (mshr_entry == MSHR.end()) {
@@ -901,6 +1004,9 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_useful = sim_stats.pf_useful;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
+
+  roi_stats.tlb_chain_hits = sim_stats.tlb_chain_hits;
+  roi_stats.tlb_chain_misses = sim_stats.tlb_chain_misses;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;

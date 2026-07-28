@@ -24,6 +24,11 @@ struct cache_stats {
   champsim::stats::event_counter<std::pair<access_type, std::remove_cv_t<decltype(NUM_CPUS)>>> fill = {};
 
   long total_miss_latency_cycles{};
+
+  // TLB-chain traffic served from this cache's translation lines (counted separately
+  // so that data-line hit/miss rates remain comparable with non-TLB-chain configs)
+  uint64_t tlb_chain_hits = 0;
+  uint64_t tlb_chain_misses = 0;
 };
 
 cache_stats operator-(cache_stats lhs, cache_stats rhs);
