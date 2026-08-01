@@ -6,14 +6,23 @@
 #include "hint_table.h"
 #include "modules.h"
 
-// Sub-prefetcher includes — the 5 existing ChampSim prefetchers
+// Sub-prefetcher includes
+#include "../ampm/ampm.h"
+#include "../bingo/bingo.h"
+#include "../dspatch/dspatch.h"
 #include "../ip_stride/ip_stride.h"
+#include "../mlop/mlop.h"
 #include "../next_line/next_line.h"
 #include "../no/no.h"
+#include "../power7/power7.h"
+#include "../ppf/ppf.h"
+#include "../sandbox/sandbox.h"
+#include "../sms/sms.h"
 #include "../spp_dev/spp_dev.h"
+#include "../stream/stream.h"
+#include "../stride/stride.h"
 #include "../va_ampm_lite/va_ampm_lite.h"
 
-// Context extraction for two-level hint lookup
 #include "context_extractors.h"
 #include <memory>
 
@@ -36,17 +45,17 @@ enum class PrefetchPolicy : int {
     IP_STRIDE = 2,
     SPP_DEV = 3,
     VA_AMPM_LITE = 4,
+    STRIDE = 5,
+    STREAM = 6,
+    AMPM = 7,
+    SMS = 8,
+    BINGO = 9,
+    SANDBOX = 10,
+    POWER7 = 11,
+    DSPATCH = 12,
+    MLOP = 13,
+    PPF = 14,
 };
-
-// hint_dispatch is a standalone prefetcher module that wraps an ensemble of
-// 5 sub-prefetchers and dispatches to the selected one based on a PC-keyed
-// hint table lookup. Metadata from the selected sub-prefetcher is returned
-// verbatim — unselected sub-prefetchers do not participate in the fill pipeline
-// for that access.
-//
-// The hint's prefetch_degree field overrides the sub-prefetcher's default
-// aggressiveness. The demand_filter flag suppresses demand-access training
-// for the selected sub-prefetcher.
 
 class pref_hint_dispatch : public champsim::modules::prefetcher
 {
@@ -55,16 +64,22 @@ class pref_hint_dispatch : public champsim::modules::prefetcher
   ip_stride ip_stride_prefetcher;
   spp_dev spp_dev_prefetcher;
   va_ampm_lite va_ampm_lite_prefetcher;
+  stride stride_prefetcher;
+  stream stream_prefetcher;
+  ampm ampm_prefetcher;
+  sms sms_prefetcher;
+  bingo bingo_prefetcher;
+  sandbox sandbox_prefetcher;
+  power7 power7_prefetcher;
+  dspatch dspatch_prefetcher;
+  mlop mlop_prefetcher;
+  ppf ppf_prefetcher;
 
-  static constexpr int NUM_PREFETCHERS = 5;
+  static constexpr int NUM_PREFETCHERS = 15;
 
-  // Last selected index for cycle_operate() dispatch
   int last_selected_index = 0;
 
-  // Compile-time context feature selection (set via -DCONTEXT_FEATURE=X)
   static constexpr ContextFeature context_feature_ = static_cast<ContextFeature>(CONTEXT_FEATURE);
-
-  // Context extractor for two-level hint lookup (nullptr for baseline NONE)
   std::unique_ptr<ContextExtractor> context_extractor_;
 
 public:

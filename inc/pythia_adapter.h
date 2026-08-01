@@ -31,6 +31,8 @@ struct PrefetcherAdapter : public champsim::modules::prefetcher {
                                     bool /*useful_prefetch*/, access_type type, uint32_t metadata_in)  {
     std::vector<uint64_t> pf_addrs;
     invoke_prefetcher(ip.to<uint64_t>(), addr.to<uint64_t>(), cache_hit, static_cast<uint8_t>(type), pf_addrs);
+    if (metadata_in > 0 && pf_addrs.size() > metadata_in)
+      pf_addrs.resize(metadata_in);
     for (auto pa : pf_addrs) {
       prefetch_line(champsim::address{pa}, true, metadata_in);
     }

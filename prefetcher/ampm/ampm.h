@@ -36,7 +36,10 @@ struct ampm : public pythia::PrefetcherAdapter {
   // Config knobs
   uint32_t ampm_pb_size = 64;
   uint32_t ampm_pred_degree = 4;
-  uint32_t ampm_pref_degree = 4;
+#ifndef AMPM_PREF_DEGREE
+#define AMPM_PREF_DEGREE 4
+#endif
+  uint32_t ampm_pref_degree = AMPM_PREF_DEGREE;
   uint32_t ampm_pref_buffer_size = 256;
   bool ampm_enable_pref_buffer = true;
   uint32_t ampm_max_delta = 16;

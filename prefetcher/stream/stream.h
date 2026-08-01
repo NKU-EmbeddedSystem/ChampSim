@@ -27,7 +27,10 @@ struct stream : public pythia::PrefetcherAdapter {
   } stats;
 
   uint32_t streamer_num_trackers = 64;
-  uint32_t streamer_pref_degree = 4;
+#ifndef STREAM_PREF_DEGREE
+#define STREAM_PREF_DEGREE 4
+#endif
+  uint32_t streamer_pref_degree = STREAM_PREF_DEGREE;
   std::deque<StreamTracker*> trackers;
 
   void invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type,

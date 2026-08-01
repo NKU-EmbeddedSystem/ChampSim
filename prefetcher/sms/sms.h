@@ -44,7 +44,10 @@ struct sms : public pythia::PrefetcherAdapter {
   uint32_t sms_ft_size = 64;
   uint32_t sms_pht_size = 16384;
   uint32_t sms_pht_assoc = 16;
-  uint32_t sms_pref_degree = 4;
+#ifndef SMS_PREF_DEGREE
+#define SMS_PREF_DEGREE 4
+#endif
+  uint32_t sms_pref_degree = SMS_PREF_DEGREE;
   uint32_t sms_region_size = 2048;
   uint32_t sms_region_size_log = 11;
   bool sms_enable_pref_buffer = true;

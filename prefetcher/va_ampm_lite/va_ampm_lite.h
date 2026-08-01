@@ -21,7 +21,10 @@ public:
   static constexpr std::size_t REGION_SETS = 1;
   static constexpr std::size_t REGION_WAYS = 128;
   static constexpr int MAX_DISTANCE = 256;
-  static constexpr int PREFETCH_DEGREE = 2;
+#ifndef VA_AMPM_LITE_DEGREE
+#define VA_AMPM_LITE_DEGREE 2
+#endif
+  static constexpr int PREFETCH_DEGREE = VA_AMPM_LITE_DEGREE;
 
   struct region_type {
     champsim::page_number vpn;

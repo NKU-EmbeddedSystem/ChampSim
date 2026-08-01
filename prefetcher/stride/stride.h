@@ -27,7 +27,10 @@ struct stride : public pythia::PrefetcherAdapter {
 
   // ── Config knobs ──────────────────────────────────────────────────
   uint32_t stride_num_trackers = 64;
-  uint32_t stride_pref_degree = 4;
+#ifndef STRIDE_PREF_DEGREE
+#define STRIDE_PREF_DEGREE 4
+#endif
+  uint32_t stride_pref_degree = STRIDE_PREF_DEGREE;
 
   // ── State ─────────────────────────────────────────────────────────
   std::deque<Tracker*> trackers;

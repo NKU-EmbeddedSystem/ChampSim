@@ -6,9 +6,10 @@
 
 pref_hint_dispatch::pref_hint_dispatch(CACHE* cache)
     : prefetcher(cache), no_prefetcher(cache), next_line_prefetcher(cache), ip_stride_prefetcher(cache), spp_dev_prefetcher(cache),
-      va_ampm_lite_prefetcher(cache)
+      va_ampm_lite_prefetcher(cache), stride_prefetcher(cache), stream_prefetcher(cache), ampm_prefetcher(cache), sms_prefetcher(cache),
+      bingo_prefetcher(cache), sandbox_prefetcher(cache), power7_prefetcher(cache), dspatch_prefetcher(cache), mlop_prefetcher(cache),
+      ppf_prefetcher(cache)
 {
-  // Instantiate the context extractor based on the compile-time CONTEXT_FEATURE
   if constexpr (context_feature_ == ContextFeature::PAGE_OFFSET) {
     context_extractor_ = std::make_unique<PageOffsetExtractor>();
   } else if constexpr (context_feature_ == ContextFeature::DELTA_SIGNATURE) {
@@ -18,19 +19,26 @@ pref_hint_dispatch::pref_hint_dispatch(CACHE* cache)
   } else if constexpr (context_feature_ == ContextFeature::COMPOSITE) {
     context_extractor_ = std::make_unique<CompositeExtractor>();
   }
-  // NONE: context_extractor_ remains nullptr, skipping two-level lookup entirely
 }
 
 void pref_hint_dispatch::prefetcher_initialize()
 {
-  // Forward initialize to sub-prefetchers that need it (e.g. spp_dev sets up parent pointers)
   spp_dev_prefetcher.prefetcher_initialize();
+  stride_prefetcher.prefetcher_initialize();
+  stream_prefetcher.prefetcher_initialize();
+  ampm_prefetcher.prefetcher_initialize();
+  sms_prefetcher.prefetcher_initialize();
+  bingo_prefetcher.prefetcher_initialize();
+  sandbox_prefetcher.prefetcher_initialize();
+  power7_prefetcher.prefetcher_initialize();
+  dspatch_prefetcher.prefetcher_initialize();
+  mlop_prefetcher.prefetcher_initialize();
+  ppf_prefetcher.prefetcher_initialize();
 }
 
 uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch,
                                                  access_type type, uint32_t metadata_in)
 {
-  // Two-level hint lookup: compute context key then try context-specific hint
   uint64_t context_key = 0;
   if (context_extractor_) {
     context_key = context_extractor_->compute_context(ip.to<uint64_t>(), addr);
@@ -45,6 +53,10 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
     hint = hint_table::instance().lookup(ip.to<uint64_t>());
   }
   int idx = hint ? hint->prefetch_policy_index : hint_table::instance().get_default_prefetch();
+
+  // spp_dev (idx 3) has a known crash — remap to no
+  if (idx == static_cast<int>(PrefetchPolicy::SPP_DEV))
+    idx = static_cast<int>(PrefetchPolicy::NO);
 
   uint32_t metadata = metadata_in;
   if (hint && hint->prefetch_degree > 0) {
@@ -61,8 +73,18 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
     case PrefetchPolicy::NO: return no_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
     case PrefetchPolicy::NEXT_LINE: return next_line_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
     case PrefetchPolicy::IP_STRIDE: return ip_stride_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
-    case PrefetchPolicy::SPP_DEV: return spp_dev_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::SPP_DEV: return no_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
     case PrefetchPolicy::VA_AMPM_LITE: return va_ampm_lite_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::STRIDE: return stride_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::STREAM: return stream_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::AMPM: return ampm_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::SMS: return sms_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::BINGO: return bingo_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::SANDBOX: return sandbox_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::POWER7: return power7_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::DSPATCH: return dspatch_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::MLOP: return mlop_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
+    case PrefetchPolicy::PPF: return ppf_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
     default: return no_prefetcher.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata);
   }
 }
@@ -80,8 +102,18 @@ uint32_t pref_hint_dispatch::prefetcher_cache_fill(champsim::address addr, long 
     case PrefetchPolicy::NO: return no_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
     case PrefetchPolicy::NEXT_LINE: return next_line_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
     case PrefetchPolicy::IP_STRIDE: return ip_stride_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
-    case PrefetchPolicy::SPP_DEV: return spp_dev_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::SPP_DEV: return no_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
     case PrefetchPolicy::VA_AMPM_LITE: return va_ampm_lite_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::STRIDE: return stride_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::STREAM: return stream_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::AMPM: return ampm_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::SMS: return sms_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::BINGO: return bingo_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::SANDBOX: return sandbox_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::POWER7: return power7_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::DSPATCH: return dspatch_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::MLOP: return mlop_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    case PrefetchPolicy::PPF: return ppf_prefetcher.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
     default: return metadata_in;
   }
 }

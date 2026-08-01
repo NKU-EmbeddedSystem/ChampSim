@@ -175,7 +175,10 @@ struct dspatch : public pythia::PrefetcherAdapter {
   uint32_t dspatch_cov_thr = 25;
   bool dspatch_enable_pref_buffer = true;
   uint32_t dspatch_pref_buffer_size = 256;
-  uint32_t dspatch_pref_degree = 8;
+#ifndef DSPATCH_PREF_DEGREE
+#define DSPATCH_PREF_DEGREE 8
+#endif
+  uint32_t dspatch_pref_degree = DSPATCH_PREF_DEGREE;
 
   // State
   uint8_t bw_bucket = 0;

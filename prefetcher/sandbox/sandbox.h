@@ -37,7 +37,10 @@ struct sandbox : public pythia::PrefetcherAdapter {
   } stats;
 
   // Config knobs
-  uint32_t sandbox_pref_degree = 4;
+#ifndef SANDBOX_PREF_DEGREE
+#define SANDBOX_PREF_DEGREE 4
+#endif
+  uint32_t sandbox_pref_degree = SANDBOX_PREF_DEGREE;
   bool sandbox_enable_stream_detect = false;
   uint32_t sandbox_stream_detect_length = 4;
   uint32_t sandbox_num_access_in_phase = 256;

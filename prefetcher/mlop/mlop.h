@@ -108,7 +108,10 @@ struct mlop : public pythia::PrefetcherAdapter {
   using PrefetcherAdapter::PrefetcherAdapter;
 
   // Knobs with defaults
-  uint32_t mlop_pref_degree = 4;
+#ifndef MLOP_PREF_DEGREE
+#define MLOP_PREF_DEGREE 4
+#endif
+  uint32_t mlop_pref_degree = MLOP_PREF_DEGREE;
   uint32_t mlop_num_updates = 100;
   float mlop_l1d_thresh = 0.25f;
   float mlop_l2c_thresh = 0.10f;
