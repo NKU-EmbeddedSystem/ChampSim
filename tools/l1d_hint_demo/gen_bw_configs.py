@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Generate bandwidth-constrained config variants for all L1D profiling configs."""
+import json, os, copy, sys
+
+champsim_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+src_dir = os.path.join(champsim_root, "configs", "l1d-profile")
+
+BW_LEVELS = {
+    "bw3200": 3200,   # baseline (unlimited)
+    "bw1600": 1600,   # constrained
+    "bw800":  800,    # severe
+}
+
+out_base = os.path.join(champsim_root, "configs", "l1d-bw")
+os.makedirs(out_base, exist_ok=True)
+
+manifest = []
+
+for bw_name, data_rate in BW_LEVELS.items():
+    out_dir = os.path.join(out_base, bw_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    for fn in sorted(os.listdir(src_dir)):
+        if not fn.endswith(".json") or fn == "manifest.json":
+            continue
+        with open(os.path.join(src_dir, fn)) as f:
+            cfg = json.load(f)
+
+        cfg["physical_memory"]["data_rate"] = data_rate
+        old_name = cfg["executable_name"]
+        new_name = f"{old_name}_{bw_name}"
+        cfg["executable_name"] = new_name
+
+        out_path = os.path.join(out_dir, fn)
+        with open(out_path, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+        manifest.append({
+            "name": new_name,
+            "config_path": out_path,
+            "bw_level": bw_name,
+            "data_rate": data_rate,
+            "base_prefetcher": old_name.replace("champsim_l1d_", ""),
+        })
+
+# Also generate bw-variant configs for champsim_no and champsim_hint_eval
+for bw_name, data_rate in BW_LEVELS.items():
+    if bw_name == "bw3200":
+        continue
+    out_dir = os.path.join(out_base, bw_name)
+
+    # champsim_no variant
+    no_cfg_path = os.path.join(champsim_root, "configs", "stage1", "champsim_config_no.json")
+    with open(no_cfg_path) as f:
+        cfg = json.load(f)
+    cfg["physical_memory"]["data_rate"] = data_rate
+    cfg["executable_name"] = f"champsim_no_{bw_name}"
+    out_path = os.path.join(out_dir, "champsim_config_no.json")
+    with open(out_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    manifest.append({"name": f"champsim_no_{bw_name}", "config_path": out_path, "bw_level": bw_name, "data_rate": data_rate, "base_prefetcher": "no_baseline"})
+
+    # champsim_hint_eval variant
+    hint_cfg_path = os.path.join(champsim_root, "configs", "stage1", "champsim_config_hint_eval.json")
+    with open(hint_cfg_path) as f:
+        cfg = json.load(f)
+    cfg["physical_memory"]["data_rate"] = data_rate
+    cfg["executable_name"] = f"champsim_hint_eval_{bw_name}"
+    out_path = os.path.join(out_dir, "champsim_config_hint_eval.json")
+    with open(out_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    manifest.append({"name": f"champsim_hint_eval_{bw_name}", "config_path": out_path, "bw_level": bw_name, "data_rate": data_rate, "base_prefetcher": "hint_eval"})
+
+manifest_path = os.path.join(out_base, "manifest.json")
+with open(manifest_path, "w") as f:
+    json.dump(manifest, f, indent=2)
+
+print(f"Generated {len(manifest)} configs across {len(BW_LEVELS)} bandwidth levels")
+print(f"Output: {out_base}")
+print(f"Manifest: {manifest_path}")
