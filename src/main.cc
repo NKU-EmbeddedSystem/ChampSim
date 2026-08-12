@@ -90,6 +90,18 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::string hint_file_name;
   app.add_option("--hint-file", hint_file_name, "Path to the hint table binary file for hint-informed policies");
 
+  std::string hint_conservative_file_name;
+  app.add_option("--hint-file-conservative", hint_conservative_file_name,
+                 "Path to the conservative hint table used when memory congestion is detected");
+  double hint_congestion_high = 500.0;
+  double hint_congestion_low = 350.0;
+  app.add_option("--hint-congestion-high", hint_congestion_high, "Fill-latency EMA (L1D cycles) above which conservative hints are used");
+  app.add_option("--hint-congestion-low", hint_congestion_low, "Fill-latency EMA (L1D cycles) below which aggressive hints resume");
+  double hint_acc_thresh = 0.03;
+  uint32_t hint_min_issued = 64;
+  app.add_option("--hint-acc-thresh", hint_acc_thresh, "Per-PC prefetch accuracy below which the conservative label is used");
+  app.add_option("--hint-min-issued", hint_min_issued, "Per-PC issued-prefetch volume floor for the accuracy gate");
+
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
@@ -97,6 +109,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   if (!hint_file_name.empty()) {
     hint_table::instance().load(hint_file_name);
   }
+  if (!hint_conservative_file_name.empty()) {
+    hint_table::instance().load_conservative(hint_conservative_file_name);
+  }
+  hint_table::instance().set_congestion_thresholds(hint_congestion_high, hint_congestion_low);
+  hint_table::instance().set_accuracy_gate(hint_acc_thresh, hint_min_issued);
 
   const bool warmup_given = (warmup_instr_option->count() > 0) || (deprec_warmup_instr_option->count() > 0);
   const bool simulation_given = (sim_instr_option->count() > 0) || (deprec_sim_instr_option->count() > 0);

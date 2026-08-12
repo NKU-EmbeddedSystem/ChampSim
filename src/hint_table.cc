@@ -101,6 +101,103 @@ bool hint_table::load(const std::string& filepath)
   return true;
 }
 
+bool hint_table::load_conservative(const std::string& filepath)
+{
+  std::ifstream file(filepath, std::ios::binary);
+  if (!file.is_open()) {
+    std::cerr << "[hint_table] Warning: could not open conservative hint file '" << filepath << "'" << std::endl;
+    conservative_loaded_ = false;
+    return false;
+  }
+
+  uint32_t magic = 0, version = 0, num_entries = 0, reserved = 0;
+  file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  file.read(reinterpret_cast<char*>(&version), sizeof(version));
+  file.read(reinterpret_cast<char*>(&num_entries), sizeof(num_entries));
+  file.read(reinterpret_cast<char*>(&reserved), sizeof(reserved));
+
+  if (!file.good() || magic != HINT_MAGIC || version != HINT_VERSION || num_entries > 10'000'000) {
+    std::cerr << "[hint_table] Error: invalid conservative hint file '" << filepath << "' (v1 per-PC format required)" << std::endl;
+    conservative_loaded_ = false;
+    return false;
+  }
+
+  hints_conservative_.clear();
+  hints_conservative_.reserve(num_entries);
+  for (uint32_t i = 0; i < num_entries; ++i) {
+    hint_entry entry{};
+    file.read(reinterpret_cast<char*>(&entry), HINT_ENTRY_SIZE);
+    if (!file.good()) {
+      std::cerr << "[hint_table] Error: truncated conservative hint file at entry " << i << std::endl;
+      hints_conservative_.clear();
+      conservative_loaded_ = false;
+      return false;
+    }
+    hints_conservative_[entry.pc] = entry;
+  }
+
+  conservative_loaded_ = true;
+  std::cout << "[hint_table] Loaded " << num_entries << " conservative hint entries from '" << filepath << "'" << std::endl;
+  return true;
+}
+
+const hint_entry* hint_table::lookup_conservative(uint64_t pc) const
+{
+  auto it = hints_conservative_.find(pc);
+  return (it != hints_conservative_.end()) ? &it->second : nullptr;
+}
+
+void hint_table::record_fill_latency(uint64_t cycles)
+{
+  constexpr double alpha = 1.0 / 256.0;
+  if (ema_count_ == 0) {
+    lat_ema_ = static_cast<double>(cycles);
+  } else {
+    lat_ema_ += alpha * (static_cast<double>(cycles) - lat_ema_);
+  }
+  ++ema_count_;
+  if (conservative_mode_) {
+    ++conservative_fills_;
+  }
+
+  // Re-evaluate the mode every 1024 demand fills (hysteresis band)
+  if ((ema_count_ & 0x3FF) == 0) {
+    bool next = conservative_mode_;
+    if (!conservative_mode_ && lat_ema_ > thresh_high_) {
+      next = true;
+    } else if (conservative_mode_ && lat_ema_ < thresh_low_) {
+      next = false;
+    }
+    if (next != conservative_mode_) {
+      conservative_mode_ = next;
+      ++mode_switches_;
+    }
+
+    // Decay per-PC runtime prefetch counters (exponential window)
+    for (auto& [pc, st] : pf_rt_stats_) {
+      st.issued >>= 1;
+      st.useful >>= 1;
+    }
+  }
+}
+
+void hint_table::record_pf_issue(uint64_t pc) { ++pf_rt_stats_[pc].issued; }
+
+void hint_table::record_pf_useful(uint64_t pc) { ++pf_rt_stats_[pc].useful; }
+
+bool hint_table::prefer_conservative(uint64_t pc) const
+{
+  auto it = pf_rt_stats_.find(pc);
+  if (it == pf_rt_stats_.end() || it->second.issued < min_issued_) {
+    return false;
+  }
+  bool gated = static_cast<double>(it->second.useful) < acc_thresh_ * static_cast<double>(it->second.issued);
+  if (gated) {
+    ++gated_hits_;
+  }
+  return gated;
+}
+
 const hint_entry* hint_table::lookup(uint64_t pc) const
 {
   auto it = hints_.find(pc);
@@ -159,4 +256,11 @@ void hint_table::print_diagnostics() const
             << " (" << (lookups ? fallbacks * 100.0 / lookups : 0.0) << "%)\n";
   std::cerr << "  context changed pref idx: " << changed
             << " (" << (matches ? changed * 100.0 / matches : 0.0) << "% of matches)\n";
+  if (conservative_loaded_) {
+    std::cerr << "[hint_table] Congestion feedback: final fill-latency EMA = " << lat_ema_ << " cycles, thresholds = [" << thresh_low_ << ", "
+              << thresh_high_ << "], mode switches = " << mode_switches_ << ", conservative-mode fills = " << conservative_fills_ << " / "
+              << ema_count_ << "\n";
+    std::cerr << "[hint_table] Accuracy gate: acc_thresh = " << acc_thresh_ << ", min_issued = " << min_issued_ << ", tracked PCs = "
+              << pf_rt_stats_.size() << ", gated lookups = " << gated_hits_ << "\n";
+  }
 }
