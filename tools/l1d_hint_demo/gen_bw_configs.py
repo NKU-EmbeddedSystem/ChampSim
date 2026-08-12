@@ -11,6 +11,18 @@ BW_LEVELS = {
     "bw800":  800,    # severe
 }
 
+BASE_DATA_RATE = 3200
+# DRAM timing parameters in the configs are in memory-controller clock cycles,
+# not nanoseconds (see config/instantiation_file.py + dram_controller.cc: the raw
+# value is multiplied by mc_period). Scale them with data_rate so the *absolute*
+# latency stays constant and only bandwidth changes between BW levels.
+TIMING_KEYS = ("tCAS", "tRCD", "tRP", "tRAS")
+
+def scale_timings(cfg, data_rate):
+    pmem = cfg["physical_memory"]
+    for key in TIMING_KEYS:
+        pmem[key] = max(1, round(pmem[key] * data_rate / BASE_DATA_RATE))
+
 out_base = os.path.join(champsim_root, "configs", "l1d-bw")
 os.makedirs(out_base, exist_ok=True)
 
@@ -27,6 +39,7 @@ for bw_name, data_rate in BW_LEVELS.items():
             cfg = json.load(f)
 
         cfg["physical_memory"]["data_rate"] = data_rate
+        scale_timings(cfg, data_rate)
         old_name = cfg["executable_name"]
         new_name = f"{old_name}_{bw_name}"
         cfg["executable_name"] = new_name
@@ -54,6 +67,7 @@ for bw_name, data_rate in BW_LEVELS.items():
     with open(no_cfg_path) as f:
         cfg = json.load(f)
     cfg["physical_memory"]["data_rate"] = data_rate
+    scale_timings(cfg, data_rate)
     cfg["executable_name"] = f"champsim_no_{bw_name}"
     out_path = os.path.join(out_dir, "champsim_config_no.json")
     with open(out_path, "w") as f:
@@ -65,6 +79,7 @@ for bw_name, data_rate in BW_LEVELS.items():
     with open(hint_cfg_path) as f:
         cfg = json.load(f)
     cfg["physical_memory"]["data_rate"] = data_rate
+    scale_timings(cfg, data_rate)
     cfg["executable_name"] = f"champsim_hint_eval_{bw_name}"
     out_path = os.path.join(out_dir, "champsim_config_hint_eval.json")
     with open(out_path, "w") as f:

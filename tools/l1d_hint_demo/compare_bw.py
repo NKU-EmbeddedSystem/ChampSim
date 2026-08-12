@@ -8,13 +8,18 @@ ipc_re = re.compile(r"cumulative IPC:\s*([\d.]+)")
 
 # Also load bw3200 (unlimited) results from the earlier batch run
 champsim_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-bw3200_dir = os.path.join(champsim_root, "artifacts/runs/l1d-baseline-batch/20260801-121706")
+bw3200_dir = os.path.join(champsim_root, "artifacts/runs/stage2-l1d-batch/20260801-121706")
 
 def get_ipc(path):
+    # Skip runs that deadlocked/aborted or never finished: their last
+    # "cumulative IPC" line is the warmup-phase IPC, not a real result.
     if not os.path.isfile(path):
         return None
     with open(path) as f:
-        matches = ipc_re.findall(f.read())
+        content = f.read()
+    if "DEADLOCK" in content or "Simulation complete" not in content:
+        return None
+    matches = ipc_re.findall(content)
     return float(matches[-1]) if matches else None
 
 # Collect: trace -> bw_level -> prefetcher -> ipc
