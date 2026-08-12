@@ -47,3 +47,9 @@ tools/profiling/tests/func/mini_binary/func_test_mini
 artifacts/runs/
 artifacts/plans/stage1/SUMMARY.log
 artifacts/plans/stage1/run_stage1.sh
+
+# Local Python virtual environment
+.venv/
+
+# Scratch outputs of the l1d hint demo pipeline (regenerable)
+tools/l1d_hint_demo/work/
