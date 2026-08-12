@@ -52,6 +52,18 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
   if (!hint) {
     hint = hint_table::instance().lookup(ip.to<uint64_t>());
   }
+
+  // Congestion feedback: when the memory system is congested (global mode)
+  // or this PC's recent prefetch accuracy is too low (per-PC gate), prefer
+  // the conservative (bandwidth-taxed) label if one exists.
+  bool use_conservative = hint_table::instance().conservative_mode() || hint_table::instance().prefer_conservative(ip.to<uint64_t>());
+  if (use_conservative) {
+    const hint_entry* conservative_hint = hint_table::instance().lookup_conservative(ip.to<uint64_t>());
+    if (conservative_hint) {
+      hint = conservative_hint;
+    }
+  }
+
   int idx = hint ? hint->prefetch_policy_index : hint_table::instance().get_default_prefetch();
 
   // spp_dev (idx 3) has a known crash — remap to no

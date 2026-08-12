@@ -27,6 +27,7 @@
 #include "champsim.h"
 #include "chrono.h"
 #include "deadlock.h"
+#include "hint_table.h"
 #include "profiler.h"
 #include "instruction.h"
 #include "util/algorithm.h"
@@ -94,13 +95,13 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 }
 
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
-    : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
+    : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), pref_ip(req.pref_ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
       type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
 {
 }
 
 CACHE::mshr_type::mshr_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
-    : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
+    : address(req.address), v_address(req.v_address), ip(req.ip), pref_ip(req.pref_ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
       prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
 }
@@ -116,6 +117,9 @@ CACHE::mshr_type CACHE::mshr_type::merge(mshr_type predecessor, mshr_type succes
                  std::back_inserter(merged_return));
 
   mshr_type retval{(successor.type == access_type::PREFETCH) ? predecessor : successor};
+
+  // keep the original prefetch's triggering PC regardless of merge direction
+  retval.pref_ip = predecessor.pref_ip;
 
   // set the time enqueued to the predecessor unless its a demand into prefetch, in which case we use the successor
   retval.time_enqueued =
@@ -149,6 +153,7 @@ auto CACHE::fill_block(mshr_type mshr, uint32_t metadata) -> BLOCK
   to_fill.v_address = mshr.v_address;
   to_fill.data = mshr.data_promise->data;
   to_fill.pf_metadata = metadata;
+  to_fill.pref_ip = mshr.prefetch_from_this ? mshr.pref_ip : champsim::address{};
 
   return to_fill;
 }
@@ -218,6 +223,7 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
     evicting_address = module_address(*way);
   }
 
+  pref_trigger_ip = fill_mshr.ip;
   auto metadata_thru = impl_prefetcher_cache_fill(module_address(fill_mshr), get_set_index(fill_mshr.address), way_idx,
                                                   (fill_mshr.type == access_type::PREFETCH), evicting_address, fill_mshr.data_promise->pf_metadata);
   impl_replacement_cache_fill(fill_mshr.cpu, get_set_index(fill_mshr.address), way_idx, module_address(fill_mshr), fill_mshr.ip, evicting_address,
@@ -236,8 +242,12 @@ bool CACHE::handle_fill(const mshr_type& fill_mshr)
   }
 
   // COLLECT STATS
-  if (fill_mshr.type != access_type::PREFETCH)
+  if (fill_mshr.type != access_type::PREFETCH) {
     sim_stats.total_miss_latency_cycles += (current_time - (fill_mshr.time_enqueued + clock_period)) / clock_period;
+    if (hint_table::instance().conservative_loaded()) {
+      hint_table::instance().record_fill_latency((current_time - fill_mshr.time_enqueued) / clock_period);
+    }
+  }
   sim_stats.mshr_return.increment(std::pair{fill_mshr.type, fill_mshr.cpu});
 
   response_type response{fill_mshr.address, fill_mshr.v_address, fill_mshr.data_promise->data, metadata_thru, fill_mshr.instr_depend_on_me};
@@ -278,6 +288,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 #endif
 
   if (should_activate_prefetcher(handle_pkt)) {
+    pref_trigger_ip = handle_pkt.ip;
     metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
   }
 
@@ -299,6 +310,11 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     // update prefetch stats and reset prefetch bit
     if (useful_prefetch) {
       ++sim_stats.pf_useful;
+      ++sim_stats.pf_useful_hit;
+      PROFILER_RECORD_PREFETCH_HIT(way->pref_ip.to<uint64_t>());
+      if (hint_table::instance().conservative_loaded()) {
+        hint_table::instance().record_pf_useful(way->pref_ip.to<uint64_t>());
+      }
       way->prefetch = false;
     }
   }
@@ -354,6 +370,11 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
       // Mark the prefetch as useful
       if (mshr_entry->prefetch_from_this) {
         ++sim_stats.pf_useful;
+        ++sim_stats.pf_useful_late;
+        PROFILER_RECORD_PREFETCH_HIT(mshr_entry->pref_ip.to<uint64_t>());
+        if (hint_table::instance().conservative_loaded()) {
+          hint_table::instance().record_pf_useful(mshr_entry->pref_ip.to<uint64_t>());
+        }
       }
     }
 
@@ -601,9 +622,14 @@ bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint3
   pf_packet.address = pf_addr;
   pf_packet.v_address = virtual_prefetch ? pf_addr : champsim::address{};
   pf_packet.is_translated = !virtual_prefetch;
+  pf_packet.pref_ip = pref_trigger_ip;
 
   internal_PQ.emplace_back(pf_packet, true, !fill_this_level);
   ++sim_stats.pf_issued;
+  PROFILER_RECORD_PREFETCH_ISSUE(pref_trigger_ip.to<uint64_t>());
+  if (hint_table::instance().conservative_loaded()) {
+    hint_table::instance().record_pf_issue(pref_trigger_ip.to<uint64_t>());
+  }
 
   return true;
 }
@@ -888,6 +914,8 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_requested = sim_stats.pf_requested;
   roi_stats.pf_issued = sim_stats.pf_issued;
   roi_stats.pf_useful = sim_stats.pf_useful;
+  roi_stats.pf_useful_hit = sim_stats.pf_useful_hit;
+  roi_stats.pf_useful_late = sim_stats.pf_useful_late;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
 

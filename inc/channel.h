@@ -65,6 +65,7 @@ class channel
     champsim::address data{};
     uint64_t instr_id = 0;
     champsim::address ip{};
+    champsim::address pref_ip{}; // PC of the demand access that triggered this prefetch
 
     std::vector<uint64_t> instr_depend_on_me{};
   };

@@ -31,6 +31,7 @@ struct cache_block {
   champsim::address data{};
 
   uint32_t pf_metadata = 0;
+  champsim::address pref_ip{}; // PC of the demand access that triggered the prefetch filling this block
 };
 } // namespace champsim
 

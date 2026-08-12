@@ -62,6 +62,7 @@ class CACHE : public champsim::operable
     champsim::address v_address;
     champsim::address data;
     champsim::address ip;
+    champsim::address pref_ip{}; // PC of the demand access that triggered this prefetch
     uint64_t instr_id;
 
     uint32_t pf_metadata;
@@ -89,6 +90,7 @@ public:
     champsim::address address;
     champsim::address v_address;
     champsim::address ip;
+    champsim::address pref_ip{}; // PC of the demand access that triggered this prefetch
     uint64_t instr_id;
 
     struct returned_value {
@@ -148,6 +150,10 @@ private:
   std::deque<tag_lookup_type> internal_PQ{};
   std::deque<tag_lookup_type> inflight_tag_check{};
   std::deque<tag_lookup_type> translation_stash{};
+
+  // IP of the access that triggered the current prefetcher invocation, used to
+  // attribute profiler prefetch-issue records to the triggering PC.
+  champsim::address pref_trigger_ip{};
 
 public:
   std::vector<channel_type*> upper_levels;
