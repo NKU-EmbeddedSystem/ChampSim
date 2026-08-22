@@ -27,10 +27,18 @@ struct PrefetcherAdapter : public champsim::modules::prefetcher {
   virtual ~PrefetcherAdapter() = default;
 
   // ── Called by new ChampSim ────────────────────────────────────────
+  // Set by hint_dispatch for broadcast-learning invocations of non-selected
+  // instances: the sub-prefetcher's internal state is updated, but no
+  // prefetches are issued. (Cannot be encoded in metadata: the cache passes
+  // metadata 0 on ordinary demand accesses, where prefetchers must issue.)
+  bool training_only = false;
+
   uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit,
                                     bool /*useful_prefetch*/, access_type type, uint32_t metadata_in)  {
     std::vector<uint64_t> pf_addrs;
     invoke_prefetcher(ip.to<uint64_t>(), addr.to<uint64_t>(), cache_hit, static_cast<uint8_t>(type), pf_addrs);
+    if (training_only)
+      return metadata_in;
     if (metadata_in > 0 && pf_addrs.size() > metadata_in)
       pf_addrs.resize(metadata_in);
     for (auto pa : pf_addrs) {

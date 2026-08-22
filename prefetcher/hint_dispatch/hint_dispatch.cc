@@ -43,19 +43,6 @@ pref_hint_dispatch::pref_hint_dispatch(CACHE* cache)
   stream_d4_prefetcher.streamer_pref_degree = STREAM_DEGREES[1];
   stream_d8_prefetcher.streamer_pref_degree = STREAM_DEGREES[2];
 
-  all_prefetchers[0] = &sandbox_d1_prefetcher;
-  all_prefetchers[1] = &sandbox_d4_prefetcher;
-  all_prefetchers[2] = &sandbox_d8_prefetcher;
-  all_prefetchers[3] = &dspatch_d1_prefetcher;
-  all_prefetchers[4] = &dspatch_d16_prefetcher;
-  all_prefetchers[5] = &dspatch_d64_prefetcher;
-  all_prefetchers[6] = &mlop_d1_prefetcher;
-  all_prefetchers[7] = &mlop_d8_prefetcher;
-  all_prefetchers[8] = &mlop_d16_prefetcher;
-  all_prefetchers[9] = &stream_d1_prefetcher;
-  all_prefetchers[10] = &stream_d4_prefetcher;
-  all_prefetchers[11] = &stream_d8_prefetcher;
-
   if constexpr (context_feature_ == ContextFeature::PAGE_OFFSET) {
     context_extractor_ = std::make_unique<PageOffsetExtractor>();
   } else if constexpr (context_feature_ == ContextFeature::DELTA_SIGNATURE) {
@@ -121,9 +108,9 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
   // Broadcast-learning dispatch: every demand access trains ALL
   // sub-prefetcher instances, except the PC's filter-marked worst policy,
   // which is skipped entirely (no learning from this PC). Only the selected
-  // instance may ISSUE prefetches; the others are invoked with metadata 0,
-  // which the adapter truncates to zero issues after their internal state
-  // has been updated.
+  // instance may ISSUE prefetches; the others are invoked with
+  // training_only set, so the adapter updates their internal state but
+  // issues nothing.
   int filter_idx = (hint && hint->demand_filter > 0) ? static_cast<int>(hint->demand_filter) - 1 : -1;
 
   uint32_t metadata = metadata_in;
@@ -137,12 +124,12 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
   PROFILER_UPDATE_PREFETCH_POLICY(ip.to<uint64_t>(), idx);
 #endif
 
-  for (int i = 0; i < NUM_PREFETCHERS; ++i) {
-    if (i == filter_idx)
-      continue; // this PC must not train its worst-AMAT prefetcher
-    uint32_t sub_metadata = (i == idx) ? metadata : 0; // only the selected instance issues
-    all_prefetchers[i]->prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, sub_metadata);
-  }
+  for_each_instance(filter_idx, [&](int i, pythia::PrefetcherAdapter& p) {
+    bool selected = (i == idx); // only the selected instance issues
+    p.training_only = !selected;
+    p.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, selected ? metadata : 0);
+    p.training_only = false;
+  });
   return metadata;
 }
 
@@ -156,14 +143,15 @@ uint32_t pref_hint_dispatch::prefetcher_cache_fill(champsim::address addr, long 
   // instance that issued the prefetch.
   int filter_idx = (hint && hint->demand_filter > 0) ? static_cast<int>(hint->demand_filter) - 1 : -1;
   if (prefetch) {
-    if (last_selected_index >= 0 && last_selected_index < NUM_PREFETCHERS && last_selected_index != filter_idx)
-      all_prefetchers[last_selected_index]->prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
-  } else {
-    for (int i = 0; i < NUM_PREFETCHERS; ++i) {
-      if (i == filter_idx)
-        continue;
-      all_prefetchers[i]->prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    if (last_selected_index >= 0 && last_selected_index < NUM_PREFETCHERS && last_selected_index != filter_idx) {
+      visit_instance(last_selected_index, [&](pythia::PrefetcherAdapter& p) {
+        p.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+      });
     }
+  } else {
+    for_each_instance(filter_idx, [&](int /*i*/, pythia::PrefetcherAdapter& p) {
+      p.prefetcher_cache_fill(addr, set, way, prefetch, evicted_addr, metadata_in);
+    });
   }
   return metadata_in;
 }

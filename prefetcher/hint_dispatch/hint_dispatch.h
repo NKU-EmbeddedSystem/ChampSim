@@ -71,9 +71,49 @@ class pref_hint_dispatch : public champsim::modules::prefetcher
   // sub-prefetcher instances (each learning via its adapter's
   // invoke_prefetcher), except the PC's filter-marked worst policy which is
   // skipped entirely. Prefetch ISSUE still comes only from the selected
-  // instance: non-selected instances are invoked with metadata 0, which the
-  // adapter truncates to zero issued prefetches.
-  champsim::modules::prefetcher* all_prefetchers[NUM_PREFETCHERS] = {};
+  // instance: non-selected instances are invoked with training_only set,
+  // which makes the adapter update state but issue nothing.
+  //
+  // Instances are visited by direct member reference — never through cached
+  // pointers. ChampSim move-constructs modules into their storage
+  // (std::tuple intern_) after the constructor body runs, so pointers filled
+  // in the constructor would dangle.
+  template <typename F>
+  void for_each_instance(int skip_idx, F&& f)
+  {
+    if (skip_idx != 0) f(0, sandbox_d1_prefetcher);
+    if (skip_idx != 1) f(1, sandbox_d4_prefetcher);
+    if (skip_idx != 2) f(2, sandbox_d8_prefetcher);
+    if (skip_idx != 3) f(3, dspatch_d1_prefetcher);
+    if (skip_idx != 4) f(4, dspatch_d16_prefetcher);
+    if (skip_idx != 5) f(5, dspatch_d64_prefetcher);
+    if (skip_idx != 6) f(6, mlop_d1_prefetcher);
+    if (skip_idx != 7) f(7, mlop_d8_prefetcher);
+    if (skip_idx != 8) f(8, mlop_d16_prefetcher);
+    if (skip_idx != 9) f(9, stream_d1_prefetcher);
+    if (skip_idx != 10) f(10, stream_d4_prefetcher);
+    if (skip_idx != 11) f(11, stream_d8_prefetcher);
+  }
+
+  template <typename F>
+  void visit_instance(int idx, F&& f)
+  {
+    switch (idx) {
+      case 0: f(sandbox_d1_prefetcher); break;
+      case 1: f(sandbox_d4_prefetcher); break;
+      case 2: f(sandbox_d8_prefetcher); break;
+      case 3: f(dspatch_d1_prefetcher); break;
+      case 4: f(dspatch_d16_prefetcher); break;
+      case 5: f(dspatch_d64_prefetcher); break;
+      case 6: f(mlop_d1_prefetcher); break;
+      case 7: f(mlop_d8_prefetcher); break;
+      case 8: f(mlop_d16_prefetcher); break;
+      case 9: f(stream_d1_prefetcher); break;
+      case 10: f(stream_d4_prefetcher); break;
+      case 11: f(stream_d8_prefetcher); break;
+      default: break;
+    }
+  }
 
   static constexpr ContextFeature context_feature_ = static_cast<ContextFeature>(CONTEXT_FEATURE);
   std::unique_ptr<ContextExtractor> context_extractor_;
