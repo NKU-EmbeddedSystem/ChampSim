@@ -36,26 +36,36 @@ GLOBAL_OPTIONS="$ROOT/global.options"
 ORIG_OPTIONS="$(cat "$GLOBAL_OPTIONS")"
 
 build_one() {
-    local cfg="$1" name="$2"
+    local cfg="$1" name="$2" macro="$3"
     if [ -x "$BIN_DIR/$name" ]; then
         return 0
+    fi
+    if [ -n "$macro" ]; then
+        printf '%s\n%s\n' "$ORIG_OPTIONS" "$macro" > "$GLOBAL_OPTIONS"
     fi
     python3 config.sh "$cfg" > /dev/null 2>&1
     rm -f .csconfig/generated_environment.o
     if make -j"$(nproc)" > "$RUN_DIR/logs/build_${name}.log" 2>&1; then
-        log "  [OK] $name"
+        log "  [OK] $name${macro:+ ($macro)}"
     else
         log "  [FAIL] $name"
     fi
+    printf '%s\n' "$ORIG_OPTIONS" > "$GLOBAL_OPTIONS"
 }
 
 for bw in bw1600 bw800; do
     log "  Building $bw variants..."
-    for cfg in "$BW_CONFIG_DIR/$bw"/*.json; do
-        [ -f "$cfg" ] || continue
-        name=$(python3 -c "import json; print(json.load(open('$cfg'))['executable_name'])")
-        build_one "$cfg" "$name"
-    done
+    while IFS='|' read -r cfg name macro; do
+        [ -n "$cfg" ] || continue
+        build_one "$cfg" "$name" "$macro"
+    done < <(python3 - "$BW_CONFIG_DIR/manifest.json" "$bw" <<'PYEOF'
+import json, sys
+mf, bw = sys.argv[1], sys.argv[2]
+for e in json.load(open(mf)):
+    if e.get("bw_level") == bw and e.get("base_prefetcher") not in ("no_baseline", "hint_eval"):
+        print("|".join((e["config_path"], e["name"], e.get("degree_macro") or "")))
+PYEOF
+)
 done
 printf '%s\n' "$ORIG_OPTIONS" > "$GLOBAL_OPTIONS"
 

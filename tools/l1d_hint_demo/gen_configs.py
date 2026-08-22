@@ -8,33 +8,22 @@ import sys
 CHAMPSIM_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUTPUT_DIR = os.path.join(CHAMPSIM_ROOT, "configs", "l1d-profile")
 
+# Candidate set: 4 families x 3 degree tiers (low/mid/high) + 'no' baseline.
+# Must match enum class PrefetchPolicy in prefetcher/hint_dispatch/hint_dispatch.h
+# and PREFETCH_POLICIES in tools/l1d_hint_demo/oracle_gen.py.
 PROFILING_MATRIX = {
-    "no": [1],
-    "next_line": [1],
-    "ip_stride": [1, 2, 4],
-    "va_ampm_lite": [1, 2],
-    "stride": [1, 2, 4],
-    "stream": [1, 2, 4],
-    "ampm": [1, 2, 4],
-    "sms": [1, 4],
-    "bingo": [1],
-    "sandbox": [1, 4],
-    "power7": [1],
-    "dspatch": [4, 8],
-    "mlop": [1, 4],
-    "ppf": [1],
+    "sandbox": [1, 4, 8],
+    "dspatch": [1, 16, 64],
+    "mlop": [1, 8, 16],
+    "stream": [1, 4, 8],
+    "no": [1],  # B0 baseline only — not part of the 12-policy hint candidate set
 }
 
 DEGREE_MACROS = {
-    "ip_stride": "IP_STRIDE_DEGREE",
-    "va_ampm_lite": "VA_AMPM_LITE_DEGREE",
-    "stride": "STRIDE_PREF_DEGREE",
-    "stream": "STREAM_PREF_DEGREE",
-    "ampm": "AMPM_PREF_DEGREE",
-    "sms": "SMS_PREF_DEGREE",
     "sandbox": "SANDBOX_PREF_DEGREE",
     "dspatch": "DSPATCH_PREF_DEGREE",
     "mlop": "MLOP_PREF_DEGREE",
+    "stream": "STREAM_PREF_DEGREE",
 }
 
 BASE_CONFIG = {
@@ -92,8 +81,15 @@ BASE_CONFIG = {
 
 def generate():
     import copy
+    import glob
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     configs = []
+
+    expected = {f"champsim_l1d_{pref}_d{deg}.json"
+                for pref, degrees in PROFILING_MATRIX.items() for deg in degrees}
+    for stale in glob.glob(os.path.join(OUTPUT_DIR, "champsim_l1d_*.json")):
+        if os.path.basename(stale) not in expected:
+            os.remove(stale)
 
     for pref, degrees in PROFILING_MATRIX.items():
         for deg in degrees:
@@ -111,12 +107,15 @@ def generate():
                 json.dump(cfg, f, indent=2)
 
             macro = DEGREE_MACROS.get(pref)
+            # NOTE: the macro is injected for every degree, including 1 — the
+            # code-default degrees are 4/8/4/4, NOT 1, so "d1" builds must pin
+            # the macro explicitly or they silently run at the default.
             configs.append({
                 "name": name,
                 "prefetcher": pref,
                 "degree": deg,
                 "config_path": path,
-                "degree_macro": f"-D{macro}={deg}" if macro and deg != 1 else None,
+                "degree_macro": f"-D{macro}={deg}" if macro else None,
             })
 
     manifest_path = os.path.join(OUTPUT_DIR, "manifest.json")

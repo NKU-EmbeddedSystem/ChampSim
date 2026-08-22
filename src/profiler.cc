@@ -6,12 +6,20 @@
 
 namespace {
 std::string prefetch_policy_name(int idx) {
+    // Must match enum class PrefetchPolicy in prefetcher/hint_dispatch/hint_dispatch.h
     switch (idx) {
-        case 0: return "no";
-        case 1: return "next_line";
-        case 2: return "ip_stride";
-        case 3: return "spp_dev";
-        case 4: return "va_ampm_lite";
+        case 0: return "sandbox_d1";
+        case 1: return "sandbox_d4";
+        case 2: return "sandbox_d8";
+        case 3: return "dspatch_d1";
+        case 4: return "dspatch_d16";
+        case 5: return "dspatch_d64";
+        case 6: return "mlop_d1";
+        case 7: return "mlop_d8";
+        case 8: return "mlop_d16";
+        case 9: return "stream_d1";
+        case 10: return "stream_d4";
+        case 11: return "stream_d8";
         default: return "unknown";
     }
 }

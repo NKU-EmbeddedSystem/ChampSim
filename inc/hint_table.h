@@ -11,6 +11,11 @@ struct hint_entry {
   uint8_t replacement_policy_index;
   uint8_t prefetch_policy_index;
   uint8_t prefetch_degree;
+  // Filter mechanism (filter-policy encoding):
+  //   0    = no filter
+  //   1..12 = (value - 1) is the index (PrefetchPolicy) of this PC's
+  //           worst-AMAT policy; demand accesses from this PC must not
+  //           update/train that prefetcher (skipped in hint_dispatch).
   uint8_t demand_filter;
   uint64_t context_key = 0;  // optional context for two-level lookup (v2 format)
 };

@@ -96,7 +96,7 @@ for trace in "${TRACES[@]}"; do
             fn=$(basename "$ef" .txt)
             [[ "$fn" == "b0_no" ]] && continue
             ipc=$(grep -oP "cumulative IPC:\s*\K[\d.]+" "$ef" | tail -1)
-            if [ -n "$ipc" ] && python3 -c "exit(0 if float('${ipc:-0}') > float('$best_ipc'))" 2>/dev/null; then
+            if [ -n "$ipc" ] && python3 -c "exit(0 if float('${ipc:-0}') > float('$best_ipc') else 1)" 2>/dev/null; then
                 best_ipc="$ipc"
                 best_name="$fn"
             fi
@@ -144,7 +144,7 @@ while IFS='|' read -r tname b0 b1 b1name b2; do
     [ -z "$tname" ] && continue
     ((total++)) || true
     verdict="✗"
-    if python3 -c "exit(0 if float('${b2:-0}') > float('${b1:-0}'))" 2>/dev/null; then
+    if python3 -c "exit(0 if float('${b2:-0}') > float('${b1:-0}') else 1)" 2>/dev/null; then
         verdict="✓"
         ((b2_wins++)) || true
     fi

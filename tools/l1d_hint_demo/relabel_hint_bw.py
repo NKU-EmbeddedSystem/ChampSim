@@ -33,6 +33,22 @@ ORACLE_GEN = os.path.join(HERE, "oracle_gen.py")
 LAMBDAS = {"l05": 0.5, "l20": 2.0}
 GATE_THETA = 0.9
 
+# 12-policy candidate set (see oracle_gen.py / hint_dispatch.h). Lowest tier
+# per family is used as the conservative gate fallback — 'no' is no longer a
+# dispatchable policy index.
+CANDIDATE_FAMILIES = {
+    "sandbox": [1, 4, 8],
+    "dspatch": [1, 16, 64],
+    "mlop": [1, 8, 16],
+    "stream": [1, 4, 8],
+}
+CANDIDATE_KEYS = {(pf, deg) for pf, degs in CANDIDATE_FAMILIES.items() for deg in degs}
+GATE_FALLBACK = ("sandbox", 1)  # lowest tier, policy index 0
+
+
+def is_candidate(pf, deg):
+    return (pf, deg) in CANDIDATE_KEYS
+
 
 def load_ground_truth(path):
     """pc -> {"best_prefetch","best_degree","all_amats"}"""
@@ -138,9 +154,14 @@ def main():
                     best_key, best_score = None, None
                     for key, amat in rec["all_amats"].items():
                         pf, deg = key.rsplit(":", 1)
+                        deg = int(deg)
+                        if not is_candidate(pf, deg):  # 'no' / stale 15-policy labels
+                            continue
                         score = amat * (1.0 + lam * waste_of(pf, deg))
                         if best_score is None or score < best_score:
                             best_key, best_score = key, score
+                    if best_key is None:
+                        best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
                     pf, deg = best_key.rsplit(":", 1)
                     labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                 out = os.path.join(bw_dir, f"hint_tax_{lname}.bin")
@@ -150,8 +171,11 @@ def main():
             labels = []
             for pc, rec in gt3200.items():
                 pf, deg = rec["best_prefetch"], int(rec.get("best_degree", 1))
-                if pf != "no" and waste_of(pf, deg) > GATE_THETA:
-                    pf, deg = "no", 1
+                if not is_candidate(pf, deg):
+                    pf, deg = GATE_FALLBACK
+                elif waste_of(pf, deg) > GATE_THETA:
+                    # conservative fallback: same family, lowest tier
+                    pf, deg = pf, min(CANDIDATE_FAMILIES[pf])
                 labels.append({"pc": pc, "best_prefetch": pf, "best_degree": deg})
             out = os.path.join(bw_dir, "hint_gate_t90.bin")
             gen_bin(labels, out)
@@ -164,23 +188,26 @@ def main():
                     for pc, rec in gt_native.items():
                         best_key, best_score = None, None
                         for key, amat in rec["all_amats"].items():
-                            pf, _ = key.rsplit(":", 1)
-                            w = 0.0 if pf == "no" else pc_cost.get((pc, key), 0.0)
+                            pf, deg = key.rsplit(":", 1)
+                            if not is_candidate(pf, int(deg)):
+                                continue
+                            w = pc_cost.get((pc, key), 0.0)
                             score = amat * (1.0 + lam * w)
                             if best_score is None or score < best_score:
                                 best_key, best_score = key, score
+                        if best_key is None:
+                            best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
                         pf, deg = best_key.rsplit(":", 1)
                         labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                     out = os.path.join(bw_dir, f"hint_pc_tax_{lname}.bin")
                     gen_bin(labels, out)
 
-            # quick distribution summary
+            # quick distribution summary: share of lowest-tier (conservative) labels
             from collections import Counter
-            for fn in (f"hint_tax_{n}.bin" for n in LAMBDAS):
-                pass
-            dist_a = Counter(l["best_prefetch"] for l in labels)
-            print(f"{tname} {bw}: gate_t90 no-share = "
-                  f"{100*dist_a.get('no',0)/max(len(labels),1):.0f}% of {len(labels)} PCs")
+            dist_a = Counter((l["best_prefetch"], l["best_degree"]) for l in labels)
+            low_share = sum(c for (pf, deg), c in dist_a.items() if deg == min(CANDIDATE_FAMILIES[pf]))
+            print(f"{tname} {bw}: lowest-tier share = "
+                  f"{100*low_share/max(len(labels),1):.0f}% of {len(labels)} PCs")
 
 
 if __name__ == "__main__":

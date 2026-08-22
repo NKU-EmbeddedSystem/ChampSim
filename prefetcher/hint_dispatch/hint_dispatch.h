@@ -6,22 +6,13 @@
 #include "hint_table.h"
 #include "modules.h"
 
-// Sub-prefetcher includes
-#include "../ampm/ampm.h"
-#include "../bingo/bingo.h"
+// Sub-prefetcher includes — the 4 candidate families; each is instantiated
+// three times with a fixed low/mid/high prefetch degree baked in at
+// construction time (see hint_dispatch.cc).
 #include "../dspatch/dspatch.h"
-#include "../ip_stride/ip_stride.h"
 #include "../mlop/mlop.h"
-#include "../next_line/next_line.h"
-#include "../no/no.h"
-#include "../power7/power7.h"
-#include "../ppf/ppf.h"
 #include "../sandbox/sandbox.h"
-#include "../sms/sms.h"
-#include "../spp_dev/spp_dev.h"
 #include "../stream/stream.h"
-#include "../stride/stride.h"
-#include "../va_ampm_lite/va_ampm_lite.h"
 
 #include "context_extractors.h"
 #include <memory>
@@ -38,44 +29,41 @@ enum class ContextFeature {
     COMPOSITE = 4,
 };
 
-// Prefetch policy indices — must match policy_registry.py
+// Prefetch policy indices — must match tools/l1d_hint_demo/oracle_gen.py
+// Candidate set: 4 families x 3 degree tiers (low/mid/high).
+//   sandbox: 1 / 4 / 8    dspatch: 1 / 16 / 64
+//   mlop:    1 / 8 / 16   stream:  1 / 4 / 8
 enum class PrefetchPolicy : int {
-    NO = 0,
-    NEXT_LINE = 1,
-    IP_STRIDE = 2,
-    SPP_DEV = 3,
-    VA_AMPM_LITE = 4,
-    STRIDE = 5,
-    STREAM = 6,
-    AMPM = 7,
-    SMS = 8,
-    BINGO = 9,
-    SANDBOX = 10,
-    POWER7 = 11,
-    DSPATCH = 12,
-    MLOP = 13,
-    PPF = 14,
+    SANDBOX_D1 = 0,
+    SANDBOX_D4 = 1,
+    SANDBOX_D8 = 2,
+    DSPATCH_D1 = 3,
+    DSPATCH_D16 = 4,
+    DSPATCH_D64 = 5,
+    MLOP_D1 = 6,
+    MLOP_D8 = 7,
+    MLOP_D16 = 8,
+    STREAM_D1 = 9,
+    STREAM_D4 = 10,
+    STREAM_D8 = 11,
 };
 
 class pref_hint_dispatch : public champsim::modules::prefetcher
 {
-  no no_prefetcher;
-  next_line next_line_prefetcher;
-  ip_stride ip_stride_prefetcher;
-  spp_dev spp_dev_prefetcher;
-  va_ampm_lite va_ampm_lite_prefetcher;
-  stride stride_prefetcher;
-  stream stream_prefetcher;
-  ampm ampm_prefetcher;
-  sms sms_prefetcher;
-  bingo bingo_prefetcher;
-  sandbox sandbox_prefetcher;
-  power7 power7_prefetcher;
-  dspatch dspatch_prefetcher;
-  mlop mlop_prefetcher;
-  ppf ppf_prefetcher;
+  sandbox sandbox_d1_prefetcher;
+  sandbox sandbox_d4_prefetcher;
+  sandbox sandbox_d8_prefetcher;
+  dspatch dspatch_d1_prefetcher;
+  dspatch dspatch_d16_prefetcher;
+  dspatch dspatch_d64_prefetcher;
+  mlop mlop_d1_prefetcher;
+  mlop mlop_d8_prefetcher;
+  mlop mlop_d16_prefetcher;
+  stream stream_d1_prefetcher;
+  stream stream_d4_prefetcher;
+  stream stream_d8_prefetcher;
 
-  static constexpr int NUM_PREFETCHERS = 15;
+  static constexpr int NUM_PREFETCHERS = 12;
 
   int last_selected_index = 0;
 

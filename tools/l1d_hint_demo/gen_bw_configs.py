@@ -28,9 +28,24 @@ os.makedirs(out_base, exist_ok=True)
 
 manifest = []
 
+# degree_macro per source config (name -> macro), from the l1d-profile manifest
+src_manifest_path = os.path.join(src_dir, "manifest.json")
+degree_macros = {}
+if os.path.isfile(src_manifest_path):
+    with open(src_manifest_path) as f:
+        for e in json.load(f):
+            degree_macros[e["name"]] = e.get("degree_macro")
+
 for bw_name, data_rate in BW_LEVELS.items():
     out_dir = os.path.join(out_base, bw_name)
     os.makedirs(out_dir, exist_ok=True)
+
+    # Drop stale variants from earlier candidate sets (e.g. the 15-policy runs)
+    for fn in os.listdir(out_dir):
+        if fn.startswith("champsim_l1d_") and fn.endswith(".json"):
+            src_exists = os.path.exists(os.path.join(src_dir, fn))
+            if not src_exists:
+                os.remove(os.path.join(out_dir, fn))
 
     for fn in sorted(os.listdir(src_dir)):
         if not fn.endswith(".json") or fn == "manifest.json":
@@ -54,6 +69,7 @@ for bw_name, data_rate in BW_LEVELS.items():
             "bw_level": bw_name,
             "data_rate": data_rate,
             "base_prefetcher": old_name.replace("champsim_l1d_", ""),
+            "degree_macro": degree_macros.get(old_name),
         })
 
 # Also generate bw-variant configs for champsim_no and champsim_hint_eval

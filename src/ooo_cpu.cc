@@ -32,7 +32,12 @@
 
 std::chrono::seconds elapsed_time();
 
-constexpr long long STAT_PRINTING_PERIOD = 10000000;
+// Heartbeat interval (retired instructions). Overridable at compile time,
+// e.g. -DSTAT_PRINTING_PERIOD=500000LL in global.options for per-segment
+// IPC traces.
+#ifndef STAT_PRINTING_PERIOD
+#define STAT_PRINTING_PERIOD 10000000LL
+#endif
 
 long O3_CPU::operate()
 {
