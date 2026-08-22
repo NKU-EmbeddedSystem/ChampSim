@@ -67,6 +67,14 @@ class pref_hint_dispatch : public champsim::modules::prefetcher
 
   int last_selected_index = 0;
 
+  // Broadcast-learning support: every demand access trains ALL 12
+  // sub-prefetcher instances (each learning via its adapter's
+  // invoke_prefetcher), except the PC's filter-marked worst policy which is
+  // skipped entirely. Prefetch ISSUE still comes only from the selected
+  // instance: non-selected instances are invoked with metadata 0, which the
+  // adapter truncates to zero issued prefetches.
+  champsim::modules::prefetcher* all_prefetchers[NUM_PREFETCHERS] = {};
+
   static constexpr ContextFeature context_feature_ = static_cast<ContextFeature>(CONTEXT_FEATURE);
   std::unique_ptr<ContextExtractor> context_extractor_;
 
