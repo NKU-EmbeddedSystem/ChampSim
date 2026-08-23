@@ -18,16 +18,21 @@ ONLY_BW = sys.argv[2] if len(sys.argv) > 2 else None  # e.g. "3200" to plot one 
 OUT_DIR = os.path.join(SEG_DIR, "plots")
 HB_RE = re.compile(r"Heartbeat CPU \d+ instructions: (\d+) cycles: \d+ heartbeat IPC: ([\d.]+)")
 
-LINES = [
+# Ablation chart: classic single-policy runs as dashed reference lines, the
+# hint dispatch as solid lines stepping up the tax ladder (0/1/2/3 terms).
+CLASSICS = [
     ("sandbox", "Sandbox", "#1f77b4"),
     ("dspatch", "DSPatch", "#ff7f0e"),
     ("mlop", "MLOP", "#2ca02c"),
     ("stream", "Stream", "#d62728"),
-    ("hint", "Hint(4pick1)", "#9467bd"),
-    ("hint_filter", "Hint+Filter", "#8c564b"),
-    # bandwidth-tax relabels (bw1600/800 only; skipped when files absent)
-    ("tax_l05", "Hint+Tax λ0.5", "#17becf"),
-    ("tax_l20", "Hint+Tax λ2.0", "#bcbd22"),
+]
+# Cumulative ablation ladder: each rung lists ALL tax terms it applies
+# (w = waste; wc = waste+churn; wci = waste+churn+ipc-gap).
+TAX_LADDER = [
+    ("hint", "Hint (no tax)", "#000000"),
+    ("tax_w", "waste", "#17becf"),
+    ("tax_wc", "waste+churn", "#bcbd22"),
+    ("tax_wci", "waste+churn+ipc-gap", "#9467bd"),
 ]
 
 
@@ -71,20 +76,23 @@ def main():
 
             fig, ax = plt.subplots(figsize=(8, 5))
             plotted = 0
-            for key, label, color in LINES:
-                p = os.path.join(bdir, f"{key}.txt")
-                if not os.path.exists(p):
-                    continue
-                ipcs = seg_ipcs(p)
-                if not ipcs:
-                    continue
-                n = min(len(ipcs), len(base))
-                if n < 2:
-                    continue
-                xs = [ipcs[i][0] for i in range(n)]
-                sp = [(ipcs[i][1] - base[i][1]) / base[i][1] * 100.0 for i in range(n)]
-                ax.plot(xs, sp, marker="o", ms=3, lw=1.5, color=color, label=label)
-                plotted += 1
+            for lines, dashed in ((CLASSICS, True), (TAX_LADDER, False)):
+                for key, label, color in lines:
+                    p = os.path.join(bdir, f"{key}.txt")
+                    if not os.path.exists(p):
+                        continue
+                    ipcs = seg_ipcs(p)
+                    if not ipcs:
+                        continue
+                    n = min(len(ipcs), len(base))
+                    if n < 2:
+                        continue
+                    xs = [ipcs[i][0] for i in range(n)]
+                    sp = [(ipcs[i][1] - base[i][1]) / base[i][1] * 100.0 for i in range(n)]
+                    ax.plot(xs, sp, marker="o" if not dashed else None, ms=3,
+                            lw=2.0 if not dashed else 1.3, ls="--" if dashed else "-",
+                            color=color, label=label, alpha=0.65 if dashed else 1.0)
+                    plotted += 1
             if not plotted:
                 plt.close(fig)
                 continue

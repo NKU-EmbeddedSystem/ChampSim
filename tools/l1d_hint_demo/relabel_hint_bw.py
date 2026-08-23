@@ -3,23 +3,26 @@
 
 Uses existing data only — no new profiling sims:
   - ground_truth.jsonl per (trace, bw): per-PC AMAT for every prefetcher:degree
-  - prefetch_stats.csv: per (trace, prefetcher_degree, bw) global counters
+  - prefetch_stats.csv: per (trace, prefetcher_degree, bw) global counters + IPC
 
-Scheme A (bandwidth tax), relabels on bw-native ground truth:
-    score(pc, pf:deg) = amat * (1 + lambda * waste(pf:deg, trace, bw))
-    waste = (issued - useful_hit) / issued   (global per trace/prefetcher/bw)
+Tax ablation ladder (all relabel on bw-native ground truth):
+  score(pc, pf:deg) = amat * (1 + lam_w*waste + CHURN_LAMBDA*churn
+                              + lam_i*ipc_gap + lam_l*l2_gap)
+    waste    = useless / demand        (absolute DRAM traffic per demand access)
+    churn    = extra net issues vs the family's best-IPC degree, / demand
+    ipc_gap  = 1 - ipc / ipc_best      (opportunity cost vs the trace's best policy)
+    l2_gap   = hitrate_best - hitrate  (diffuse L2 pollution: prefetch lines
+                                        evicting demand lines hurt every PC's
+                                        L2 hit rate — invisible to per-PC AMAT)
+  Variants: w (waste), wc (+churn), wci (+ipc gap). Retired: wcl/wcil
+  (L2-pollution tax — real signal, failed as a per-PC linear tax, see
+  comment at VARIANTS).
 
 Scheme B (hybrid gating), keeps the bw3200-trained label (clean signal):
-    if waste(chosen pf:deg, trace, target bw) > theta -> relabel PC to 'no'
+    if waste(chosen pf:deg, trace, target bw) > theta -> relabel PC to lowest tier
 
 Usage:
   python3 relabel_hint_bw.py <bw_run_dir> <stage2_run_dir> <prefetch_stats.csv> [cost_profile_dir]
-
-If cost_profile_dir (per-PC cost profiling at bw3200, layout <trace>/profiling/*.json)
-is given, additionally generates fine-grained per-PC variants:
-  hint_pc_tax_l05.bin / hint_pc_tax_l20.bin
-    score(pc, pf:deg) = amat_native(pc, pf:deg) * (1 + lambda * waste_pc)
-    waste_pc = (issued_pc - hit_pc) / issued_pc   (per PC, per prefetcher:degree)
 """
 import csv
 import json
@@ -31,8 +34,34 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORACLE_GEN = os.path.join(HERE, "oracle_gen.py")
 
-LAMBDAS = {"l05": 0.5, "l20": 2.0}
+CHURN_LAMBDA = 1.0  # pipeline-occupancy tax weight (issued/demand)
 GATE_THETA = 0.9
+
+# Ablation ladder over tax terms: name -> (waste weight, churn?, ipc-gap
+# weight, l2-pollution weight). Each rung CUMULATES the previous one's terms.
+#   w   : absolute-traffic waste tax only
+#   wc  : + IPC-gated churn tax (degree selection within a family)
+#   wci : + opportunity-cost tax (policy's global IPC gap to the trace's best)
+# IPC_LAMBDA=0.5 flips noise picks (local AMAT edge <=2%) while real edges
+# (milc's dspatch_d64 hot PCs, ~15%) survive the charge.
+#
+# Retired (failed): wcl (waste+churn+L2-pollution) and wcil. The
+# L2-pollution tax — demand L2 hit-rate gap of the isolated policy run — is
+# a real diffuse-cost signal but fails as a per-PC linear tax:
+#   (a) pollution is superlinear in the polluter's rate: cactusADM keeps a
+#       9%-miss-mass sandbox residue whose flood drops the mix's L2 hit rate
+#       75%->35% (below the 48%-mass variant), so flipping marginal PCs to
+#       the clean policy ADDS victims and loses IPC;
+#   (b) the isolated hit rate conflates self-coverage with externality:
+#       xalancbmk's hr-champion (dspatch_d1, 87.7%) is a -33% IPC policy,
+#       so the tax steers toward hit-rate gamers.
+# Net geomean worse than wci at every bandwidth. l2_gaps() is kept so the
+# experiment is one tuple away from rerunning; bins/sims stay on disk.
+VARIANTS = {
+    "w": (0.5, False, 0.0, 0.0),
+    "wc": (0.5, True, 0.0, 0.0),
+    "wci": (0.5, True, 0.5, 0.0),
+}
 
 # 12-policy candidate set (see oracle_gen.py / hint_dispatch.h). Lowest tier
 # per family is used as the conservative gate fallback — 'no' is no longer a
@@ -158,6 +187,113 @@ def load_traffic_waste(csv_path, demand_by_trace):
     return waste
 
 
+def load_churn(csv_path, demand_by_trace):
+    """(trace, stat_name, bw) -> pipeline churn tax for degree selection.
+
+    For each family, the degree with the best GLOBAL IPC is the reference
+    (its extra issues are evidently productive). Any other degree pays a
+    tax equal to its extra net-waste above the reference:
+        [(issued - useful_hit) - (issued_ref - useful_hit_ref)] / demand
+    This penalizes degree inflation only when the market (global IPC) has
+    proven it net-harmful — cactusADM stream_d8 pays, soplex stream_d8
+    (genuinely better than d1) pays nothing.
+    """
+    issued = {}
+    hits = {}
+    ipcs = {}
+    with open(csv_path) as f:
+        for r in csv.DictReader(f):
+            dem = demand_by_trace.get(r["trace"], 0)
+            key = (r["trace"], r["prefetcher"], r["bw"])
+            issued[key] = int(r["pf_issued"]) / dem if dem > 0 else 0.0
+            hits[key] = int(r["pf_useful_hit"]) / dem if dem > 0 else 0.0
+            try:
+                ipcs[key] = float(r["ipc"])
+            except ValueError:
+                ipcs[key] = 0.0
+    # per (trace, family, bw): best-IPC degree and its net waste
+    best = {}
+    for (t, name, bw), ipc in ipcs.items():
+        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d\d+$", name)
+        if not m:
+            continue
+        fam_key = (t, m.group(1), bw)
+        if fam_key not in best or ipc > best[fam_key][0]:
+            best[fam_key] = (ipc, issued[(t, name, bw)] - hits[(t, name, bw)])
+    churn = {}
+    for (t, name, bw), v in issued.items():
+        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d\d+$", name)
+        if not m:
+            continue
+        ref_net = best[(t, m.group(1), bw)][1]
+        churn[(t, name, bw)] = max(0.0, (v - hits[(t, name, bw)]) - ref_net)
+    return churn
+
+
+def load_ipc_gaps(csv_path):
+    """(trace, stat_name, bw) -> 1 - ipc/ipc_best over the 12 candidates.
+
+    Opportunity-cost tax: a policy whose full-trace IPC sits far below the
+    trace's best must beat that policy locally by a comparable margin to
+    win a PC. This is the cross-family generalization of the churn tax
+    (which only compares degrees within one family).
+    """
+    ipcs = {}
+    with open(csv_path) as f:
+        for r in csv.DictReader(f):
+            if not re.match(r"^(sandbox|dspatch|mlop|stream)_d\d+$", r["prefetcher"]):
+                continue
+            try:
+                ipcs[(r["trace"], r["prefetcher"], r["bw"])] = float(r["ipc"])
+            except ValueError:
+                pass
+    best = {}
+    for (t, name, bw), v in ipcs.items():
+        best[(t, bw)] = max(best.get((t, bw), 0.0), v)
+    gap = {}
+    for (t, name, bw), v in ipcs.items():
+        b = best.get((t, bw), 0.0)
+        gap[(t, name, bw)] = max(0.0, 1.0 - v / b) if b > 0 else 0.0
+    return gap
+
+
+L2_LOAD_RE = re.compile(r"^cpu0->cpu0_L2C LOAD\s+ACCESS:\s*(\d+) HIT:\s*(\d+)")
+
+
+def l2_gaps(bw_dir):
+    """(pf, deg) -> L2-pollution tax = max(0, hr_best - hr) over the 12
+    candidates' eval files in bw_dir.
+
+    The demand L2 hit rate is a global observable: prefetch pollution that
+    evicts demand-needed lines slows every PC's L2 hits, which per-PC AMAT
+    structurally cannot see (benefit concentrates in the prefetching PC,
+    cost diffuses to everyone). The isolated single-policy runs already
+    carry the signature — cactusADM: stream_d1 75.5% vs sandbox 53% — so
+    no new experiment is needed, just this parse."""
+    hrs = {}
+    for fn in os.listdir(bw_dir):
+        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d(\d+)\.txt$", fn)
+        if not m:
+            continue
+        pf, deg = m.group(1), int(m.group(2))
+        if not is_candidate(pf, deg):
+            continue
+        try:
+            with open(os.path.join(bw_dir, fn), errors="replace") as f:
+                for line in f:
+                    mm = L2_LOAD_RE.match(line)
+                    if mm:
+                        acc, hit = int(mm.group(1)), int(mm.group(2))
+                        hrs[(pf, deg)] = hit / acc if acc > 0 else None
+                        break
+        except OSError:
+            continue
+    best = max((v for v in hrs.values() if v is not None), default=None)
+    if best is None:
+        return {}
+    return {k: max(0.0, best - v) for k, v in hrs.items() if v is not None}
+
+
 def policy_to_stat_name(pf, deg):
     return f"{pf}_d{deg}"
 
@@ -212,6 +348,8 @@ def main():
     demand_by_trace = {tname: load_demand_total(os.path.join(stage2_dir, tname, "profiling"))
                        for tname in os.listdir(stage2_dir)}
     twaste = load_traffic_waste(stats_csv, demand_by_trace)  # traffic-based: tax schemes
+    churn = load_churn(stats_csv, demand_by_trace)  # pipeline-occupancy tax: degree selection
+    ipc_gap = load_ipc_gaps(stats_csv)  # opportunity-cost tax: policy selection
 
     for tname in sorted(os.listdir(run_dir)):
         tdir = os.path.join(run_dir, tname)
@@ -232,8 +370,9 @@ def main():
                     return 0.0
                 return waste.get((tname, policy_to_stat_name(pf, deg), bw), 0.0)
 
-            # ── Scheme A: bandwidth tax on native ground truth ──
-            for lname, lam in LAMBDAS.items():
+            # ── Scheme A: tax ablation ladder on native ground truth ──
+            l2g = l2_gaps(bw_dir)
+            for lname, (lam_w, use_churn, lam_i, lam_l2) in VARIANTS.items():
                 labels = []
                 for pc, rec in gt_native.items():
                     if all_amats_tied(rec):
@@ -247,8 +386,12 @@ def main():
                                 continue
                             if float(amat) <= 0.0:
                                 continue  # no measured data under this policy
-                            w = twaste.get((tname, policy_to_stat_name(pf, deg), bw), 0.0)
-                            score = amat * (1.0 + lam * w)
+                            sname = policy_to_stat_name(pf, deg)
+                            w = twaste.get((tname, sname, bw), 0.0)
+                            c = churn.get((tname, sname, bw), 0.0) if use_churn else 0.0
+                            g = lam_i * ipc_gap.get((tname, sname, bw), 0.0)
+                            l = lam_l2 * l2g.get((pf, deg), 0.0)
+                            score = amat * (1.0 + lam_w * w + CHURN_LAMBDA * c + g + l)
                             if best_score is None or score < best_score:
                                 best_key, best_score = key, score
                         if best_key is None:
@@ -274,33 +417,6 @@ def main():
             out = os.path.join(bw_dir, "hint_gate_t90.bin")
             gen_bin(labels, out)
 
-            # ── Scheme A-fine: per-PC bandwidth tax on native ground truth ──
-            if cost_base:
-                pc_cost = load_pc_cost(os.path.join(cost_base, tname, "profiling"))
-                for lname, lam in LAMBDAS.items():
-                    labels = []
-                    for pc, rec in gt_native.items():
-                        if all_amats_tied(rec):
-                            best_key = gb_key  # no per-PC signal: trace-wide best
-                        else:
-                            best_key, best_score = None, None
-                            for key, amat in rec["all_amats"].items():
-                                pf, deg = key.rsplit(":", 1)
-                                if not is_candidate(pf, int(deg)):
-                                    continue
-                                if float(amat) <= 0.0:
-                                    continue  # no measured data under this policy
-                                w = pc_cost.get((pc, key), 0.0)
-                                score = amat * (1.0 + lam * w)
-                                if best_score is None or score < best_score:
-                                    best_key, best_score = key, score
-                            if best_key is None:
-                                best_key = gb_key  # no data: trace-wide best
-                        pf, deg = best_key.rsplit(":", 1)
-                        labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
-                    out = os.path.join(bw_dir, f"hint_pc_tax_{lname}.bin")
-                    gen_bin(labels, out)
-
             # quick distribution summary: share of lowest-tier (conservative) labels
             from collections import Counter
             dist_a = Counter((l["best_prefetch"], l["best_degree"]) for l in labels)
@@ -317,7 +433,8 @@ def main():
         if not os.path.isdir(eval_dir):
             continue
         gb3200 = global_best(eval_dir) or GATE_FALLBACK
-        for lname, lam in LAMBDAS.items():
+        l2g3200 = l2_gaps(eval_dir)
+        for lname, (lam_w, use_churn, lam_i, lam_l2) in VARIANTS.items():
             labels = []
             for pc, rec in gt3200.items():
                 if all_amats_tied(rec):
@@ -330,8 +447,12 @@ def main():
                             continue
                         if float(amat) <= 0.0:
                             continue  # no measured data under this policy
-                        w = twaste.get((tname, policy_to_stat_name(pf, int(deg)), "bw3200"), 0.0)
-                        score = amat * (1.0 + lam * w)
+                        sname = policy_to_stat_name(pf, int(deg))
+                        w = twaste.get((tname, sname, "bw3200"), 0.0)
+                        c = churn.get((tname, sname, "bw3200"), 0.0) if use_churn else 0.0
+                        g = lam_i * ipc_gap.get((tname, sname, "bw3200"), 0.0)
+                        l = lam_l2 * l2g3200.get((pf, int(deg)), 0.0)
+                        score = amat * (1.0 + lam_w * w + CHURN_LAMBDA * c + g + l)
                         if best_score is None or score < best_score:
                             best_key, best_score = key, score
                     if best_key is None:
