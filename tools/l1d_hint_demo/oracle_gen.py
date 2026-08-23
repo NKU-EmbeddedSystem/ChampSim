@@ -103,9 +103,9 @@ def best_candidate_index(rec, default_idx=0, default_degree=1) -> int:
         if float(amat) <= 0.0:
             continue  # no measurable data under this policy
         cands.append((float(amat), idx, int(deg)))
-    if not cands:
-        return default_idx, default_degree
-    if max(a for a, _, _ in cands) == min(a for a, _, _ in cands):
+    # All-tied only when there ARE >=2 measured candidates; records without
+    # all_amats (e.g. relabel output fed back through gen_bin) skip this.
+    if len(cands) >= 2 and max(a for a, _, _ in cands) == min(a for a, _, _ in cands):
         return default_idx, default_degree  # all tied: no per-PC signal
     pref_name = rec.get("best_prefetch", "no")
     degree = int(rec.get("best_degree", 1))
@@ -113,6 +113,8 @@ def best_candidate_index(rec, default_idx=0, default_degree=1) -> int:
         return policy_index(pref_name, degree), degree
     except ValueError:
         pass
+    if not cands:
+        return default_idx, default_degree
     _, idx, deg = min(cands)
     return idx, deg
 

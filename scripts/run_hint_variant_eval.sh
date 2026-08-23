@@ -48,7 +48,9 @@ for tdir in "$BWRUN"/*/; do
     [ -z "$trace" ] && continue
     for bw in bw1600 bw800; do
         bwdir="$tdir/$bw"; n=${bw#bw}
-        for v in "hint.bin b2_hint_native" "hint_filter.bin b5_hint_filter" "hint_tax_l05.bin b3_hint_tax_l05" "hint_tax_l20.bin b3_hint_tax_l20" "hint_gate_t90.bin b4_hint_gate_t90"; do
+        # only the latest native hint + filter variant (tax/gate schemes
+        # are superseded by the tie-to-global-best labeling)
+        for v in "hint.bin b2_hint_native" "hint_filter.bin b5_hint_filter"; do
             set -- $v
             [ -f "$bwdir/$1" ] || continue
             run_one "bin/champsim_hint_eval_${bw}" "$bwdir/$1" "$trace" "$bwdir/$2.txt" &

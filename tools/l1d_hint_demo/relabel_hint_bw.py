@@ -110,7 +110,11 @@ def load_ground_truth(path):
 
 
 def load_waste(csv_path):
-    """(trace, "ampm_d1", bw) -> waste ratio in [0,1]; 'no'/b0 -> 0"""
+    """(trace, "ampm_d1", bw) -> waste ratio in [0,1]; 'no'/b0 -> 0
+
+    Accuracy-based waste (1 - useful/issued): used by the GATE scheme,
+    which thresholds on per-prefetch wastefulness.
+    """
     waste = {}
     with open(csv_path) as f:
         for r in csv.DictReader(f):
@@ -119,6 +123,38 @@ def load_waste(csv_path):
             uhit = int(r["pf_useful_hit"])
             w = (issued - uhit) / issued if issued > 0 else 0.0
             waste[(r["trace"], pf, r["bw"])] = w
+    return waste
+
+
+def load_demand_total(profiling_dir):
+    """Total demand accesses for the trace (policy-independent)."""
+    if not os.path.isdir(profiling_dir):
+        return 0
+    for fn in os.listdir(profiling_dir):
+        if not fn.endswith(".json"):
+            continue
+        tot = 0
+        with open(os.path.join(profiling_dir, fn)) as f:
+            for line in f:
+                try:
+                    tot += json.loads(line).get("access_count", 0)
+                except json.JSONDecodeError:
+                    pass
+        return tot
+    return 0
+
+
+def load_traffic_waste(csv_path, demand_by_trace):
+    """(trace, stat_name, bw) -> absolute-traffic waste = useless
+    prefetches per demand access. Unlike 1-accuracy, this spreads
+    policies apart on low-accuracy traces: dspatch on mcf ~ 1.3,
+    sandbox ~ 0.6, stream ~ 0.05 — the tax can actually discriminate."""
+    waste = {}
+    with open(csv_path) as f:
+        for r in csv.DictReader(f):
+            dem = demand_by_trace.get(r["trace"], 0)
+            w = int(r["pf_useless"]) / dem if dem > 0 else 0.0
+            waste[(r["trace"], r["prefetcher"], r["bw"])] = w
     return waste
 
 
@@ -172,7 +208,10 @@ def gen_bin(labels, out_path):
 def main():
     run_dir, stage2_dir, stats_csv = sys.argv[1], sys.argv[2], sys.argv[3]
     cost_base = sys.argv[4] if len(sys.argv) > 4 else None
-    waste = load_waste(stats_csv)
+    waste = load_waste(stats_csv)  # accuracy-based: gate scheme
+    demand_by_trace = {tname: load_demand_total(os.path.join(stage2_dir, tname, "profiling"))
+                       for tname in os.listdir(stage2_dir)}
+    twaste = load_traffic_waste(stats_csv, demand_by_trace)  # traffic-based: tax schemes
 
     for tname in sorted(os.listdir(run_dir)):
         tdir = os.path.join(run_dir, tname)
@@ -206,11 +245,14 @@ def main():
                             deg = int(deg)
                             if not is_candidate(pf, deg):  # 'no' / stale 15-policy labels
                                 continue
-                            score = amat * (1.0 + lam * waste_of(pf, deg))
+                            if float(amat) <= 0.0:
+                                continue  # no measured data under this policy
+                            w = twaste.get((tname, policy_to_stat_name(pf, deg), bw), 0.0)
+                            score = amat * (1.0 + lam * w)
                             if best_score is None or score < best_score:
                                 best_key, best_score = key, score
                         if best_key is None:
-                            best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
+                            best_key = gb_key  # no data: trace-wide best
                     pf, deg = best_key.rsplit(":", 1)
                     labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                 out = os.path.join(bw_dir, f"hint_tax_{lname}.bin")
@@ -246,12 +288,14 @@ def main():
                                 pf, deg = key.rsplit(":", 1)
                                 if not is_candidate(pf, int(deg)):
                                     continue
+                                if float(amat) <= 0.0:
+                                    continue  # no measured data under this policy
                                 w = pc_cost.get((pc, key), 0.0)
                                 score = amat * (1.0 + lam * w)
                                 if best_score is None or score < best_score:
                                     best_key, best_score = key, score
                             if best_key is None:
-                                best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
+                                best_key = gb_key  # no data: trace-wide best
                         pf, deg = best_key.rsplit(":", 1)
                         labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                     out = os.path.join(bw_dir, f"hint_pc_tax_{lname}.bin")
@@ -263,6 +307,39 @@ def main():
             low_share = sum(c for (pf, deg), c in dist_a.items() if deg == min(CANDIDATE_FAMILIES[pf]))
             print(f"{tname} {bw}: lowest-tier share = "
                   f"{100*low_share/max(len(labels),1):.0f}% of {len(labels)} PCs")
+
+        # ── bw3200: bandwidth tax on the 3200 ground truth ──
+        # The per-PC AMAT vs global IPC misalignment exists at 3200 too
+        # (e.g. mcf: dspatch wins per-PC AMAT but floods the channel), so
+        # the tax schemes apply at native bandwidth as well. Tied PCs get
+        # the trace-wide best without tax.
+        eval_dir = os.path.join(stage2_dir, tname, "eval")
+        if not os.path.isdir(eval_dir):
+            continue
+        gb3200 = global_best(eval_dir) or GATE_FALLBACK
+        for lname, lam in LAMBDAS.items():
+            labels = []
+            for pc, rec in gt3200.items():
+                if all_amats_tied(rec):
+                    best_key = f"{gb3200[0]}:{gb3200[1]}"
+                else:
+                    best_key, best_score = None, None
+                    for key, amat in rec["all_amats"].items():
+                        pf, deg = key.rsplit(":", 1)
+                        if not is_candidate(pf, int(deg)):
+                            continue
+                        if float(amat) <= 0.0:
+                            continue  # no measured data under this policy
+                        w = twaste.get((tname, policy_to_stat_name(pf, int(deg)), "bw3200"), 0.0)
+                        score = amat * (1.0 + lam * w)
+                        if best_score is None or score < best_score:
+                            best_key, best_score = key, score
+                    if best_key is None:
+                        best_key = f"{gb3200[0]}:{gb3200[1]}"  # no data: trace-wide best
+                pf, deg = best_key.rsplit(":", 1)
+                labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
+            out = os.path.join(stage2_dir, tname, f"hint_tax_{lname}.bin")
+            gen_bin(labels, out)
 
 
 if __name__ == "__main__":

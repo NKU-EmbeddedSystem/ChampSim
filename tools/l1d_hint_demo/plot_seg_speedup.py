@@ -14,6 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 SEG_DIR = sys.argv[1] if len(sys.argv) > 1 else "/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-seg"
+ONLY_BW = sys.argv[2] if len(sys.argv) > 2 else None  # e.g. "3200" to plot one bandwidth only
 OUT_DIR = os.path.join(SEG_DIR, "plots")
 HB_RE = re.compile(r"Heartbeat CPU \d+ instructions: (\d+) cycles: \d+ heartbeat IPC: ([\d.]+)")
 
@@ -24,18 +25,28 @@ LINES = [
     ("stream", "Stream", "#d62728"),
     ("hint", "Hint(4pick1)", "#9467bd"),
     ("hint_filter", "Hint+Filter", "#8c564b"),
+    # bandwidth-tax relabels (bw1600/800 only; skipped when files absent)
+    ("tax_l05", "Hint+Tax λ0.5", "#17becf"),
+    ("tax_l20", "Hint+Tax λ2.0", "#bcbd22"),
 ]
 
 
 def seg_ipcs(path):
-    """Return list of (retired_instructions, window_IPC) per heartbeat."""
+    """Return list of (retired_instructions, window_IPC) per heartbeat.
+
+    Returns None when the run did not finish ("Simulation complete" marker
+    missing) so a partially-written file never yields a truncated line.
+    """
     vals = []
+    complete = False
     with open(path, errors="replace") as f:
         for line in f:
+            if "Simulation complete" in line:
+                complete = True
             m = HB_RE.search(line)
             if m:
                 vals.append((int(m.group(1)), float(m.group(2))))
-    return vals
+    return vals if complete else None
 
 
 def main():
@@ -46,6 +57,8 @@ def main():
         if not os.path.isdir(tdir):
             continue
         for bw in ("3200", "1600", "800"):
+            if ONLY_BW and bw != ONLY_BW:
+                continue
             bdir = os.path.join(tdir, f"bw{bw}")
             nop = os.path.join(bdir, "no.txt")
             if not os.path.isdir(bdir) or not os.path.exists(nop):
