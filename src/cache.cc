@@ -267,6 +267,8 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
+  if (handle_pkt.type == access_type::PREFETCH)
+    ++sim_stats.pf_try_hit_entered;
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} data: {} set: {} way: {} ({}) type: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
@@ -299,6 +301,12 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+
+    if (handle_pkt.type == access_type::PREFETCH) {
+      // a prefetch that hits a resident line: issued but never misses,
+      // therefore never classified useful/useless
+      ++sim_stats.pf_hit_resident;
+    }
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {
@@ -348,6 +356,8 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
 
 bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
 {
+  if (handle_pkt.type == access_type::PREFETCH)
+    ++sim_stats.pf_miss_entered;
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} type: {} local_prefetch: {} cycle: {}\n", NAME, __func__, handle_pkt.instr_id,
                handle_pkt.address, handle_pkt.v_address, access_type_names.at(champsim::to_underlying(handle_pkt.type)), handle_pkt.prefetch_from_this,
@@ -376,6 +386,14 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
           hint_table::instance().record_pf_useful(mshr_entry->pref_ip.to<uint64_t>());
         }
       }
+    } else if (handle_pkt.type == access_type::PREFETCH) {
+      // a prefetch absorbed into an already-in-flight MSHR: issued but
+      // never produces its own fill, therefore never classified
+      if (mshr_entry->type == access_type::PREFETCH) {
+        ++sim_stats.pf_absorbed_pf_mshr;
+      } else {
+        ++sim_stats.pf_absorbed_dem_mshr;
+      }
     }
 
     // COLLECT STATS
@@ -384,6 +402,8 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     *mshr_entry = mshr_type::merge(*mshr_entry, to_allocate);
   } else {
     if (mshr_full) { // not enough MSHR resource
+      if (handle_pkt.type == access_type::PREFETCH)
+        ++sim_stats.pf_mshr_full_drop;
       return false;  // TODO should we allow prefetches anyway if they will not be filled to this level?
     }
 
@@ -391,12 +411,16 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     bool success = send_to_rq ? lower_level->add_rq(mshr_pkt.second) : lower_level->add_pq(mshr_pkt.second);
 
     if (!success) {
+      if (handle_pkt.type == access_type::PREFETCH)
+        ++sim_stats.pf_downstream_reject;
       return false;
     }
 
     // Allocate an MSHR
     if (mshr_pkt.second.response_requested) {
       MSHR.emplace_back(std::move(mshr_pkt.first));
+      if (handle_pkt.type == access_type::PREFETCH)
+        ++sim_stats.pf_mshr_alloc;
     }
   }
 
@@ -918,6 +942,14 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_useful_late = sim_stats.pf_useful_late;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
+  roi_stats.pf_absorbed_pf_mshr = sim_stats.pf_absorbed_pf_mshr;
+  roi_stats.pf_absorbed_dem_mshr = sim_stats.pf_absorbed_dem_mshr;
+  roi_stats.pf_hit_resident = sim_stats.pf_hit_resident;
+  roi_stats.pf_mshr_full_drop = sim_stats.pf_mshr_full_drop;
+  roi_stats.pf_downstream_reject = sim_stats.pf_downstream_reject;
+  roi_stats.pf_try_hit_entered = sim_stats.pf_try_hit_entered;
+  roi_stats.pf_miss_entered = sim_stats.pf_miss_entered;
+  roi_stats.pf_mshr_alloc = sim_stats.pf_mshr_alloc;
 
   for (auto* ul : upper_levels) {
     ul->roi_stats.RQ_ACCESS = ul->sim_stats.RQ_ACCESS;

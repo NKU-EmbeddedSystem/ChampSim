@@ -119,6 +119,10 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     lines.push_back(fmt::format("cpu{}->{} PREFETCH REQUESTED: {:10} ISSUED: {:10} USEFUL: {:10} USEFUL_HIT: {:10} USEFUL_LATE: {:10} USELESS: {:10}", cpu,
                                 stats.name, stats.pf_requested, stats.pf_issued, stats.pf_useful, stats.pf_useful_hit, stats.pf_useful_late,
                                 stats.pf_useless));
+    lines.push_back(fmt::format("cpu{}->{} PREFETCH DIAG ABSORB_PF_MSHR: {:10} ABSORB_DEM_MSHR: {:10} HIT_RESIDENT: {:10} MSHR_FULL_DROP: {:10} DWN_REJECT: {:10} FILL: {:10} TRY_HIT: {:10} MISS_ENTER: {:10} MSHR_ALLOC: {:10}", cpu,
+                                stats.name, stats.pf_absorbed_pf_mshr, stats.pf_absorbed_dem_mshr, stats.pf_hit_resident,
+                                stats.pf_mshr_full_drop, stats.pf_downstream_reject, stats.pf_fill,
+                                stats.pf_try_hit_entered, stats.pf_miss_entered, stats.pf_mshr_alloc));
 
     uint64_t total_downstream_demands = total_mshr_return - stats.mshr_return.value_or(std::pair{access_type::PREFETCH, cpu}, mshr_return_value_type{});
     lines.push_back(
