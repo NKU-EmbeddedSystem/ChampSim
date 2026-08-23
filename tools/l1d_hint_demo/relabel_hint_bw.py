@@ -24,6 +24,7 @@ is given, additionally generates fine-grained per-PC variants:
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -48,6 +49,49 @@ GATE_FALLBACK = ("sandbox", 1)  # lowest tier, policy index 0
 
 def is_candidate(pf, deg):
     return (pf, deg) in CANDIDATE_KEYS
+
+
+def all_amats_tied(rec):
+    """True when every positive candidate AMAT is equal — the PC is
+    insensitive to the prefetch policy (cold/tail PC)."""
+    vals = []
+    for key, amat in (rec.get("all_amats") or {}).items():
+        pf, deg = key.rsplit(":", 1)
+        if not is_candidate(pf, int(deg)):
+            continue
+        if float(amat) <= 0.0:
+            continue
+        vals.append(float(amat))
+    return len(vals) >= 2 and max(vals) == min(vals)
+
+
+IPC_RE = re.compile(r"cumulative IPC:\s*([\d.]+)")
+
+
+def global_best(bw_dir):
+    """Argmax cumulative IPC over the single-policy eval files in bw_dir.
+    Returns (pf, deg) or None."""
+    best = None
+    best_ipc = 0.0
+    for fn in os.listdir(bw_dir):
+        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d(\d+)\.txt$", fn)
+        if not m:
+            continue
+        pf, deg = m.group(1), int(m.group(2))
+        if not is_candidate(pf, deg):
+            continue
+        last = None
+        try:
+            with open(os.path.join(bw_dir, fn), errors="replace") as f:
+                for line in f:
+                    if "cumulative IPC" in line:
+                        last = line
+            v = float(IPC_RE.search(last).group(1))
+        except (OSError, AttributeError, ValueError):
+            continue
+        if v > best_ipc:
+            best_ipc, best = v, (pf, deg)
+    return best
 
 
 def load_ground_truth(path):
@@ -141,6 +185,8 @@ def main():
             gt_native = load_ground_truth(os.path.join(bw_dir, "ground_truth.jsonl"))
             if not gt_native:
                 continue
+            gb = global_best(bw_dir) or GATE_FALLBACK  # this bw's offline global best
+            gb_key = f"{gb[0]}:{gb[1]}"
 
             def waste_of(pf, deg):
                 if pf == "no":
@@ -151,17 +197,20 @@ def main():
             for lname, lam in LAMBDAS.items():
                 labels = []
                 for pc, rec in gt_native.items():
-                    best_key, best_score = None, None
-                    for key, amat in rec["all_amats"].items():
-                        pf, deg = key.rsplit(":", 1)
-                        deg = int(deg)
-                        if not is_candidate(pf, deg):  # 'no' / stale 15-policy labels
-                            continue
-                        score = amat * (1.0 + lam * waste_of(pf, deg))
-                        if best_score is None or score < best_score:
-                            best_key, best_score = key, score
-                    if best_key is None:
-                        best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
+                    if all_amats_tied(rec):
+                        best_key = gb_key  # no per-PC signal: trace-wide best
+                    else:
+                        best_key, best_score = None, None
+                        for key, amat in rec["all_amats"].items():
+                            pf, deg = key.rsplit(":", 1)
+                            deg = int(deg)
+                            if not is_candidate(pf, deg):  # 'no' / stale 15-policy labels
+                                continue
+                            score = amat * (1.0 + lam * waste_of(pf, deg))
+                            if best_score is None or score < best_score:
+                                best_key, best_score = key, score
+                        if best_key is None:
+                            best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
                     pf, deg = best_key.rsplit(":", 1)
                     labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                 out = os.path.join(bw_dir, f"hint_tax_{lname}.bin")
@@ -170,12 +219,15 @@ def main():
             # ── Scheme B: 3200 label + waste gate at target bw ──
             labels = []
             for pc, rec in gt3200.items():
-                pf, deg = rec["best_prefetch"], int(rec.get("best_degree", 1))
-                if not is_candidate(pf, deg):
-                    pf, deg = GATE_FALLBACK
-                elif waste_of(pf, deg) > GATE_THETA:
-                    # conservative fallback: same family, lowest tier
-                    pf, deg = pf, min(CANDIDATE_FAMILIES[pf])
+                if pc in gt_native and all_amats_tied(gt_native[pc]):
+                    pf, deg = gb  # no per-PC signal: this bw's trace-wide best
+                else:
+                    pf, deg = rec["best_prefetch"], int(rec.get("best_degree", 1))
+                    if not is_candidate(pf, deg):
+                        pf, deg = GATE_FALLBACK
+                    elif waste_of(pf, deg) > GATE_THETA:
+                        # conservative fallback: same family, lowest tier
+                        pf, deg = pf, min(CANDIDATE_FAMILIES[pf])
                 labels.append({"pc": pc, "best_prefetch": pf, "best_degree": deg})
             out = os.path.join(bw_dir, "hint_gate_t90.bin")
             gen_bin(labels, out)
@@ -186,17 +238,20 @@ def main():
                 for lname, lam in LAMBDAS.items():
                     labels = []
                     for pc, rec in gt_native.items():
-                        best_key, best_score = None, None
-                        for key, amat in rec["all_amats"].items():
-                            pf, deg = key.rsplit(":", 1)
-                            if not is_candidate(pf, int(deg)):
-                                continue
-                            w = pc_cost.get((pc, key), 0.0)
-                            score = amat * (1.0 + lam * w)
-                            if best_score is None or score < best_score:
-                                best_key, best_score = key, score
-                        if best_key is None:
-                            best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
+                        if all_amats_tied(rec):
+                            best_key = gb_key  # no per-PC signal: trace-wide best
+                        else:
+                            best_key, best_score = None, None
+                            for key, amat in rec["all_amats"].items():
+                                pf, deg = key.rsplit(":", 1)
+                                if not is_candidate(pf, int(deg)):
+                                    continue
+                                w = pc_cost.get((pc, key), 0.0)
+                                score = amat * (1.0 + lam * w)
+                                if best_score is None or score < best_score:
+                                    best_key, best_score = key, score
+                            if best_key is None:
+                                best_key = f"{GATE_FALLBACK[0]}:{GATE_FALLBACK[1]}"
                         pf, deg = best_key.rsplit(":", 1)
                         labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
                     out = os.path.join(bw_dir, f"hint_pc_tax_{lname}.bin")

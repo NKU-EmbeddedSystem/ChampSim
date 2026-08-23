@@ -103,11 +103,14 @@ for trace in "${TRACES[@]}"; do
         done
         [ -n "$best_name" ] && cp "$tdir/eval/${best_name}.txt" "$tdir/eval/b1_best.txt"
 
-        # Aggregate + hint
+        # Aggregate + hint. PCs whose candidate AMATs are all tied (cold/tail
+        # PCs with no per-PC signal) get the trace's offline global best
+        # single policy (B1) instead of an arbitrary tie-break pick.
         python3 "$ROOT/tools/profiling/03_workers/aggregate_ground_truth.py" \
             --profiling-dir "$tdir/profiling" --output "$tdir/ground_truth.jsonl" > /dev/null 2>&1
         python3 "$DEMO_DIR/oracle_gen.py" generate \
-            --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint.bin" > /dev/null 2>&1
+            --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint.bin" \
+            ${best_name:+--default "$best_name"} > /dev/null 2>&1
 
         # B2 eval
         "$BIN_DIR/champsim_hint_eval" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" \

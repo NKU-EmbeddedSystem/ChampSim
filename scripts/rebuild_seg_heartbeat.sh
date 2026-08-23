@@ -12,8 +12,14 @@ build_one() {
     printf '%s\n%s\n%s\n' "$ORIG_OPTIONS" "$macro" "$extra" > "$GLOBAL_OPTIONS"
     python3 config.sh "$cfg" > /dev/null 2>&1
     rm -f .csconfig/generated_environment.o
+    # The generated environment sources can lag behind the object build
+    # under -jN (stale config hash -> undefined vtable at link). A second
+    # make pass after the sources have settled fixes the intermittent
+    # failures without slowing the common case.
     if make -j"$(nproc)" > "/tmp/segbuild_${name}.log" 2>&1; then
         echo "[OK] $name"
+    elif make -j"$(nproc)" >> "/tmp/segbuild_${name}.log" 2>&1; then
+        echo "[OK] $name (retry)"
     else
         echo "[FAIL] $name (see /tmp/segbuild_${name}.log)"
     fi

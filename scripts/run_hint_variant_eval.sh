@@ -12,13 +12,28 @@ run_one() { # bin hint trace outfile
     "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" --hint-file "$2" "$3" > "$4" 2>&1
 }
 
-# bw3200: fixed native hint + filter variant (regenerate first)
+# bw3200: fixed native hint + filter variant (regenerate first).
+# PCs with all-tied candidate AMATs (cold/tail PCs, no per-PC signal) get
+# the trace's offline global best single policy instead of a tie-break pick.
+ipc_of() { grep -oP "cumulative IPC:\s*\K[\d.]+" "$1" 2>/dev/null | tail -1; }
 for tdir in "$BATCH"/*/; do
     tname=$(basename "$tdir")
     trace=$(ls "$TRACE_DIR"/$(echo $tname | sed 's/_[0-9]*B$//')_*.trace.xz 2>/dev/null | head -1)
     [ -z "$trace" ] && { echo "no trace for $tname"; continue; }
-    python3 tools/l1d_hint_demo/oracle_gen.py generate --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint.bin" > /dev/null 2>&1
-    python3 tools/l1d_hint_demo/oracle_gen.py generate --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint_filter.bin" --filter > /dev/null 2>&1
+    best_name=""; best_ipc=0
+    for ef in "$tdir"/eval/*.txt; do
+        [ -f "$ef" ] || continue
+        fn=$(basename "$ef" .txt)
+        [ "$fn" = "b0_no" ] && continue
+        v=$(ipc_of "$ef")
+        if [ -n "$v" ] && python3 -c "exit(0 if float('${v:-0}') > float('$best_ipc') else 1)" 2>/dev/null; then
+            best_ipc="$v"; best_name="$fn"
+        fi
+    done
+    python3 tools/l1d_hint_demo/oracle_gen.py generate --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint.bin" \
+        ${best_name:+--default "$best_name"} > /dev/null 2>&1
+    python3 tools/l1d_hint_demo/oracle_gen.py generate --labels "$tdir/ground_truth.jsonl" --output "$tdir/hint_filter.bin" --filter \
+        ${best_name:+--default "$best_name"} > /dev/null 2>&1
     run_one bin/champsim_hint_eval "$tdir/hint.bin" "$trace" "$tdir/eval/b2_hint.txt" &
     ((running++)) || true
     run_one bin/champsim_hint_eval "$tdir/hint_filter.bin" "$trace" "$tdir/eval/b5_hint_filter.txt" &

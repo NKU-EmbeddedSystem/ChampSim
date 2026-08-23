@@ -38,8 +38,12 @@ def read_ipc(path):
     return float(m.group(1)) if m else None
 
 
-def collect(batch_dir):
-    """[(trace, best_name, best_ipc, hint_ipc, no_ipc), ...] sorted by trace."""
+def collect(batch_dir, seg_dir=None, bw="3200"):
+    """[(trace, best_name, best_ipc, hint_ipc, no_ipc), ...] sorted by trace.
+
+    With seg_dir, hint/no are taken from <seg_dir>/<trace>/bw<bw>/{hint,no}.txt
+    (l1d-seg layout) instead of the batch dir's b2_hint/b0_no files.
+    """
     rows = []
     for t in sorted(os.listdir(batch_dir)):
         edir = os.path.join(batch_dir, t, "eval")
@@ -52,8 +56,13 @@ def collect(batch_dir):
                 if v:
                     cands[f[:-4]] = v
         best_name, best_ipc = max(cands.items(), key=lambda kv: kv[1])
-        hint = read_ipc(os.path.join(edir, "b2_hint.txt"))
-        no = read_ipc(os.path.join(edir, "b0_no.txt"))
+        if seg_dir:
+            sdir = os.path.join(seg_dir, t, f"bw{bw}")
+            hint = read_ipc(os.path.join(sdir, "hint.txt"))
+            no = read_ipc(os.path.join(sdir, "no.txt"))
+        else:
+            hint = read_ipc(os.path.join(edir, "b2_hint.txt"))
+            no = read_ipc(os.path.join(edir, "b0_no.txt"))
         if hint is None or no is None:
             continue
         rows.append((t, best_name, best_ipc, hint, no))
@@ -124,8 +133,12 @@ def main():
                     nargs="?")
     ap.add_argument("--png", default=None,
                     help="also render the table as a PNG image")
+    ap.add_argument("--seg-dir", default=None,
+                    help="take hint/no columns from a l1d-seg run dir")
+    ap.add_argument("--bw", default="3200",
+                    help="bandwidth subdir when --seg-dir is given")
     args = ap.parse_args()
-    rows = collect(args.batch_dir)
+    rows = collect(args.batch_dir, args.seg_dir, args.bw)
     if not rows:
         raise SystemExit(f"no usable results under {args.batch_dir}")
     print_table(rows)

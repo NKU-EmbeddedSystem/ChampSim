@@ -79,19 +79,20 @@ def worst_policy_filter(rec, selected_idx) -> int:
     return harmful[-1][1] + 1
 
 
-def best_candidate_index(rec) -> int:
+def best_candidate_index(rec, default_idx=0, default_degree=1) -> int:
     """Best policy index for one ground-truth record.
 
-    'no' (and any label outside the 12-combination candidate set) cannot be
-    dispatched by hint_dispatch; fall back to the best-AMAT candidate from
-    all_amats that IS in the candidate set.
+    Label handling:
+    - 'no' (and any label outside the 12-combination candidate set) cannot
+      be dispatched by hint_dispatch; fall back to the best-AMAT candidate
+      from all_amats that IS in the candidate set.
+    - When all positive candidate AMATs are EQUAL, the PC is insensitive to
+      the prefetch policy (typically a cold/tail PC whose accesses no
+      pattern prefetcher converts). Dictionary-order tie-breaking would
+      assign arbitrary policies to the majority of PCs; instead apply the
+      trace's offline global best single policy (default_idx/degree, the
+      argmax over the 12 full-trace runs).
     """
-    pref_name = rec.get("best_prefetch", "no")
-    degree = int(rec.get("best_degree", 1))
-    try:
-        return policy_index(pref_name, degree), degree
-    except ValueError:
-        pass
     cands = []
     for key, amat in (rec.get("all_amats") or {}).items():
         try:
@@ -103,12 +104,21 @@ def best_candidate_index(rec) -> int:
             continue  # no measurable data under this policy
         cands.append((float(amat), idx, int(deg)))
     if not cands:
-        return 0, 1  # sandbox_d1 (lowest tier) as last resort
+        return default_idx, default_degree
+    if max(a for a, _, _ in cands) == min(a for a, _, _ in cands):
+        return default_idx, default_degree  # all tied: no per-PC signal
+    pref_name = rec.get("best_prefetch", "no")
+    degree = int(rec.get("best_degree", 1))
+    try:
+        return policy_index(pref_name, degree), degree
+    except ValueError:
+        pass
     _, idx, deg = min(cands)
     return idx, deg
 
 
-def generate(labels_path: str, output_path: str, use_filter: bool = False):
+def generate(labels_path: str, output_path: str, use_filter: bool = False,
+             default_idx: int = 0, default_degree: int = 1):
     entries = []
     with open(labels_path) as f:
         for line in f:
@@ -118,7 +128,7 @@ def generate(labels_path: str, output_path: str, use_filter: bool = False):
             rec = json.loads(line)
             pc_str = rec["pc"]
             pc = int(pc_str, 16) if isinstance(pc_str, str) else int(pc_str)
-            pref_idx, degree = best_candidate_index(rec)
+            pref_idx, degree = best_candidate_index(rec, default_idx, default_degree)
             filt = worst_policy_filter(rec, pref_idx) if use_filter else int(rec.get("filter_policy", 0))
             entries.append((pc, pref_idx, degree, filt))
 
@@ -166,12 +176,23 @@ if __name__ == "__main__":
                      help="mark each PC's worst-AMAT policy in the filter byte "
                           "(dspatch worsts left unmarked); runtime skips training "
                           "that prefetcher with this PC's demand accesses")
+    gen.add_argument("--default", default=None, metavar="POLICY",
+                     help="policy applied to PCs whose candidate AMATs are all "
+                          "tied (no per-PC signal), e.g. 'stream_d8'; default "
+                          "sandbox_d1")
 
     val = sub.add_parser("validate")
     val.add_argument("--input", required=True)
 
     args = parser.parse_args()
     if args.cmd == "generate":
-        generate(args.labels, args.output, use_filter=getattr(args, "filter", False))
+        def_idx, def_deg = 0, 1
+        if getattr(args, "default", None):
+            if args.default not in PREFETCH_POLICIES:
+                parser.error(f"--default {args.default!r} not in the 12-policy candidate set")
+            def_idx = PREFETCH_POLICIES[args.default]
+            def_deg = int(args.default.rsplit("_d", 1)[1])
+        generate(args.labels, args.output, use_filter=getattr(args, "filter", False),
+                 default_idx=def_idx, default_degree=def_deg)
     elif args.cmd == "validate":
         validate(args.input)
