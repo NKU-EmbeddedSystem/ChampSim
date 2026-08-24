@@ -73,6 +73,30 @@ def main():
             if not base:
                 print(f"skip {tname} bw{bw}: no heartbeat data in no.txt")
                 continue
+            # Windows differ in width between binary generations (heartbeats
+            # every 5M vs every 10M).  Comparing a wide strategy window against
+            # the single narrower baseline window at its end paints fake dips
+            # wherever the baseline has a phase change inside the span (a 10M
+            # average divided by a 5M spike).  Aggregate the baseline over the
+            # SAME instruction interval instead: cycles of a baseline window =
+            # its instr span / its window IPC.
+            bucket = lambda x: int(round(x / seg_span))
+            wmap = {}
+            prev = 0
+            for x, v in base:
+                if v > 0 and x > prev:
+                    wmap[bucket(x)] = (x - prev, (x - prev) / v)
+                prev = x
+
+            def base_ipc_over(lo, hi):
+                """Baseline IPC aggregated over instruction interval (lo, hi]."""
+                klo, khi = bucket(lo), bucket(hi)
+                instr = cyc = 0.0
+                for k in range(klo + 1, khi + 1):
+                    dx, dc = wmap.get(k, (0.0, 0.0))
+                    instr += dx
+                    cyc += dc
+                return instr / cyc if cyc > 0 else None
 
             fig, ax = plt.subplots(figsize=(8, 5))
             plotted = 0
@@ -84,11 +108,15 @@ def main():
                     ipcs = seg_ipcs(p)
                     if not ipcs:
                         continue
-                    n = min(len(ipcs), len(base))
-                    if n < 2:
+                    xs, sp, prev = [], [], 0
+                    for x, v in ipcs:
+                        biv = base_ipc_over(prev, x)
+                        if biv and biv > 0:
+                            xs.append(x)
+                            sp.append((v - biv) / biv * 100.0)
+                        prev = x
+                    if len(xs) < 2:
                         continue
-                    xs = [ipcs[i][0] for i in range(n)]
-                    sp = [(ipcs[i][1] - base[i][1]) / base[i][1] * 100.0 for i in range(n)]
                     ax.plot(xs, sp, marker="o" if not dashed else None, ms=3,
                             lw=2.0 if not dashed else 1.3, ls="--" if dashed else "-",
                             color=color, label=label, alpha=0.65 if dashed else 1.0)

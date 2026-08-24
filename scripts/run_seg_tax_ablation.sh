@@ -1,8 +1,8 @@
 #!/bin/bash
-# Segment runs for the tax ablation ladder (w / wci variants) at all
-# bandwidths. The wc variant reuses the completed tax_l05 runs (identical
-# labels), so only tax_w and tax_wci are simulated here.
-# Writes <seg_dir>/<trace>/bw<bw>/{tax_w,tax_wci}.txt.
+# Segment runs for the tax ablation ladder (w / wc / wci variants) at all
+# bandwidths. The wc labels are NOT the old l05 ones (measured: 17.2% of
+# PCs differ on cactusADM), so tax_wc gets its own runs.
+# Writes <seg_dir>/<trace>/bw<bw>/{tax_w,tax_wc,tax_wci}.txt.
 set -uo pipefail
 ROOT=/mnt/sdd/liz/pc-split/ChampSim
 cd "$ROOT"
@@ -26,7 +26,7 @@ for trace in "$TRACE_DIR"/*.trace.xz; do
 
     # bw3200: ablation hints live in the batch trace dir, 3200 binary
     if [ -z "$ONLY_BW" ] || [ "$ONLY_BW" = "3200" ]; then
-    for v in "hint_tax_w.bin tax_w" "hint_tax_wci.bin tax_wci"; do
+    for v in "hint_tax_w.bin tax_w" "hint_tax_wc.bin tax_wc" "hint_tax_wci.bin tax_wci"; do
         set -- $v
         [ -f "$BATCH/$tname/$1" ] || continue
         out="$OUT/$tname/bw3200/$2.txt"; mkdir -p "$OUT/$tname/bw3200"
@@ -41,7 +41,7 @@ for trace in "$TRACE_DIR"/*.trace.xz; do
         [ -n "$ONLY_BW" ] && [ "$ONLY_BW" != "$bw" ] && continue
         bwdir="$BWRUN/$tname/bw$bw"
         odir="$OUT/$tname/bw$bw"; mkdir -p "$odir"
-        for v in "hint_tax_w.bin tax_w" "hint_tax_wci.bin tax_wci"; do
+        for v in "hint_tax_w.bin tax_w" "hint_tax_wc.bin tax_wc" "hint_tax_wci.bin tax_wci"; do
             set -- $v
             [ -f "$bwdir/$1" ] || continue
             out="$odir/$2.txt"
