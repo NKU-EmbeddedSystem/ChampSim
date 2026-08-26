@@ -101,8 +101,10 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
   int idx = hint ? hint->prefetch_policy_index : hint_table::instance().get_default_prefetch();
 
   // Clamp out-of-range indices (e.g. stale hint files from the 15-policy
-  // candidate set) to the lowest tier.
-  if (idx < 0 || idx >= NUM_PREFETCHERS)
+  // candidate set) to the lowest tier. Index == NUM_PREFETCHERS is the OFF
+  // sentinel ("no prefetcher"): every instance stays training-only, so the
+  // PC issues no prefetches at all.
+  if (idx < 0 || idx > NUM_PREFETCHERS)
     idx = 0;
 
   // Broadcast-learning dispatch: every demand access trains ALL
@@ -125,7 +127,7 @@ uint32_t pref_hint_dispatch::prefetcher_cache_operate(champsim::address addr, ch
 #endif
 
   for_each_instance(filter_idx, [&](int i, pythia::PrefetcherAdapter& p) {
-    bool selected = (i == idx); // only the selected instance issues
+    bool selected = (idx < NUM_PREFETCHERS) && (i == idx); // OFF: no issuer
     p.training_only = !selected;
     p.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, selected ? metadata : 0);
     p.training_only = false;

@@ -18,7 +18,13 @@ PREFETCH_POLICIES = {
     'dspatch_d1': 3, 'dspatch_d16': 4, 'dspatch_d64': 5,
     'mlop_d1': 6, 'mlop_d8': 7, 'mlop_d16': 8,
     'stream_d1': 9, 'stream_d4': 10, 'stream_d8': 11,
+    # OFF sentinel: idx == NUM_PREFETCHERS (12) in hint_dispatch means "no
+    # prefetcher issues for this PC" (all instances stay training-only).
+    # 'no' is the aggregate_ground_truth label form, 'no_d1' the eval-file
+    # naming used by gb_of()/--default.
+    'no': 12, 'no_d1': 12,
 }
+NO_INDEX = 12
 
 
 def policy_index(pref_name: str, degree) -> int:
@@ -60,6 +66,8 @@ def worst_policy_filter(rec, selected_idx) -> int:
     for key, amat in all_amats.items():
         try:
             pf, deg = key.rsplit(":", 1)
+            if pf == "no":
+                continue  # 'no' is not a trainable instance; never a filter target
             idx = policy_index(pf, int(deg))
         except (ValueError, IndexError):
             continue  # 'no' or stale labels — not filter candidates
@@ -110,7 +118,9 @@ def best_candidate_index(rec, default_idx=0, default_degree=1) -> int:
     pref_name = rec.get("best_prefetch", "no")
     degree = int(rec.get("best_degree", 1))
     try:
-        return policy_index(pref_name, degree), degree
+        idx = policy_index(pref_name, degree)
+        # OFF entries carry degree 0 so hint_dispatch keeps metadata_in
+        return idx, (0 if idx == NO_INDEX else degree)
     except ValueError:
         pass
     if not cands:
@@ -191,9 +201,9 @@ if __name__ == "__main__":
         def_idx, def_deg = 0, 1
         if getattr(args, "default", None):
             if args.default not in PREFETCH_POLICIES:
-                parser.error(f"--default {args.default!r} not in the 12-policy candidate set")
+                parser.error(f"--default {args.default!r} not in the 12-policy candidate set (+ 'no')")
             def_idx = PREFETCH_POLICIES[args.default]
-            def_deg = int(args.default.rsplit("_d", 1)[1])
+            def_deg = 0 if def_idx == NO_INDEX else int(args.default.rsplit("_d", 1)[1])
         generate(args.labels, args.output, use_filter=getattr(args, "filter", False),
                  default_idx=def_idx, default_degree=def_deg)
     elif args.cmd == "validate":
