@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """Bandwidth-aware hint relabeling (coarse-grained, per-trace waste ratios).
 
-Uses existing data only — no new profiling sims:
+Driver for the unified labeler (labeler.py): loads every data source the
+labeling rules consume, assembles one CellData per (trace, bw) cell, and
+emits hint bins via oracle_gen. All labeling logic lives in labeler.py;
+this file owns I/O only.
+
+Data (no new profiling sims needed):
   - ground_truth.jsonl per (trace, bw): per-PC AMAT for every prefetcher:degree
   - prefetch_stats.csv: per (trace, prefetcher_degree, bw) global counters + IPC
+  - seg-sim outputs (optional 2nd pass): per-PC mixed-regime records
 
-Tax ablation ladder (all relabel on bw-native ground truth):
-  score(pc, pf:deg) = amat * (1 + lam_w*waste + CHURN_LAMBDA*churn
-                              + lam_i*ipc_gap + lam_l*l2_gap)
+Tax terms (score="tax"):
+  score(pc, pf:deg) = amat * (1 + lam_w*waste + churn_w*churn
+                              + lam_i*ipc_gap + lam_l2*l2_gap)
     waste    = useless / demand        (absolute DRAM traffic per demand access)
     churn    = extra net issues vs the family's best-IPC degree, / demand
     ipc_gap  = 1 - ipc / ipc_best      (opportunity cost vs the trace's best policy)
-    l2_gap   = hitrate_best - hitrate  (diffuse L2 pollution: prefetch lines
-                                        evicting demand lines hurt every PC's
-                                        L2 hit rate — invisible to per-PC AMAT)
-  Variants: w (waste), wc (+churn), wci (+ipc gap). Retired: wcl/wcil
-  (L2-pollution tax — real signal, failed as a per-PC linear tax, see
-  comment at VARIANTS).
-
-Scheme B (hybrid gating), keeps the bw3200-trained label (clean signal):
-    if waste(chosen pf:deg, trace, target bw) > theta -> relabel PC to lowest tier
+    l2_gap   = hitrate_best - hitrate  (retired: real signal, failed as a
+                                        per-PC linear tax - see labeler.py)
 
 Usage:
-  python3 relabel_hint_bw.py <bw_run_dir> <stage2_run_dir> <prefetch_stats.csv> [cost_profile_dir]
+  python3 relabel_hint_bw.py <bw_run_dir> <stage2_run_dir> <prefetch_stats.csv> \
+      [cost_profile_dir] [seg_dir] [--schemes w,wci,pigougate] \
+      [--config '{"lam_i":0.8}' [--config-name exp01]] [--list]
+  Default (no options): regenerate the six historical bin sets
+  (w, wc, wci, gate_t90, pigou, pigougate) byte-identically.
 """
+import argparse
 import csv
 import json
 import os
@@ -32,95 +36,21 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 ORACLE_GEN = os.path.join(HERE, "oracle_gen.py")
 
-CHURN_LAMBDA = 1.0  # pipeline-occupancy tax weight (issued/demand)
-GATE_THETA = 0.9
+from labeler import (CANDIDATE_FAMILIES, GATE_FALLBACK, PRESETS, PARAM_SPACE,
+                     DEFAULT_CONFIG, all_amats_tied, config_slug, is_candidate,
+                     idx_to_key, make_labels, pigou_net, policy_to_stat_name,
+                     CellData)
 
-# Ablation ladder over tax terms: name -> (waste weight, churn?, ipc-gap
-# weight, l2-pollution weight). Each rung CUMULATES the previous one's terms.
-#   w   : absolute-traffic waste tax only
-#   wc  : + IPC-gated churn tax (degree selection within a family)
-#   wci : + opportunity-cost tax (policy's global IPC gap to the trace's best)
-# IPC_LAMBDA=0.5 flips noise picks (local AMAT edge <=2%) while real edges
-# (milc's dspatch_d64 hot PCs, ~15%) survive the charge.
-#
-# Retired (failed): wcl (waste+churn+L2-pollution) and wcil. The
-# L2-pollution tax — demand L2 hit-rate gap of the isolated policy run — is
-# a real diffuse-cost signal but fails as a per-PC linear tax:
-#   (a) pollution is superlinear in the polluter's rate: cactusADM keeps a
-#       9%-miss-mass sandbox residue whose flood drops the mix's L2 hit rate
-#       75%->35% (below the 48%-mass variant), so flipping marginal PCs to
-#       the clean policy ADDS victims and loses IPC;
-#   (b) the isolated hit rate conflates self-coverage with externality:
-#       xalancbmk's hr-champion (dspatch_d1, 87.7%) is a -33% IPC policy,
-#       so the tax steers toward hit-rate gamers.
-# Net geomean worse than wci at every bandwidth. l2_gaps() is kept so the
-# experiment is one tuple away from rerunning; bins/sims stay on disk.
-VARIANTS = {
-    "w": (0.5, False, 0.0, 0.0),
-    "wc": (0.5, True, 0.0, 0.0),
-    "wci": (0.5, True, 0.5, 0.0),
-}
-
-# 12-policy candidate set (see oracle_gen.py / hint_dispatch.h). Lowest tier
-# per family is used as the conservative gate fallback — 'no' is no longer a
-# dispatchable policy index.
-CANDIDATE_FAMILIES = {
-    "sandbox": [1, 4, 8],
-    "dspatch": [1, 16, 64],
-    "mlop": [1, 8, 16],
-    "stream": [1, 4, 8],
-}
-CANDIDATE_KEYS = {(pf, deg) for pf, degs in CANDIDATE_FAMILIES.items() for deg in degs}
-GATE_FALLBACK = ("sandbox", 1)  # lowest tier, policy index 0
-
-
-def is_candidate(pf, deg):
-    return (pf, deg) in CANDIDATE_KEYS
-
-
-def all_amats_tied(rec):
-    """True when every positive candidate AMAT is equal — the PC is
-    insensitive to the prefetch policy (cold/tail PC)."""
-    vals = []
-    for key, amat in (rec.get("all_amats") or {}).items():
-        pf, deg = key.rsplit(":", 1)
-        if not is_candidate(pf, int(deg)):
-            continue
-        if float(amat) <= 0.0:
-            continue
-        vals.append(float(amat))
-    return len(vals) >= 2 and max(vals) == min(vals)
-
-
-IPC_RE = re.compile(r"cumulative IPC:\s*([\d.]+)")
-
-
-def global_best(bw_dir):
-    """Argmax cumulative IPC over the single-policy eval files in bw_dir.
-    Returns (pf, deg) or None."""
-    best = None
-    best_ipc = 0.0
-    for fn in os.listdir(bw_dir):
-        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d(\d+)\.txt$", fn)
-        if not m:
-            continue
-        pf, deg = m.group(1), int(m.group(2))
-        if not is_candidate(pf, deg):
-            continue
-        last = None
-        try:
-            with open(os.path.join(bw_dir, fn), errors="replace") as f:
-                for line in f:
-                    if "cumulative IPC" in line:
-                        last = line
-            v = float(IPC_RE.search(last).group(1))
-        except (OSError, AttributeError, ValueError):
-            continue
-        if v > best_ipc:
-            best_ipc, best = v, (pf, deg)
-    return best
+# Preset -> output bin name (gate_t90 keeps its historical name).
+SCHEME_OUT = {"gate_t90": "hint_gate_t90.bin"}
+# Presets that are not generated at native bandwidth (Scheme B reuses the
+# 3200 label, so it only makes sense at a foreign target bw).
+NO_3200 = {"gate_t90"}
+# The six historical bin sets regenerated by default.
+DEFAULT_SCHEMES = ("w", "wc", "wci", "gate_t90", "pigou", "pigougate")
 
 
 def load_ground_truth(path):
@@ -307,14 +237,9 @@ def l2_gaps(bw_dir):
     return {k: max(0.0, best - v) for k, v in hrs.items() if v is not None}
 
 
-def policy_to_stat_name(pf, deg):
-    return f"{pf}_d{deg}"
-
-
 def load_pc_cost(profile_dir):
     """Load per-PC prefetch cost from a profiling dir of <trace>__<pf>__<deg>.json files.
     Returns dict: (pc, "pf:deg") -> waste ratio in [0,1]."""
-    import re
     fname_re = re.compile(r"(.+?)__(.+?)__(\d+)\.json$")
     cost = {}
     if not profile_dir or not os.path.isdir(profile_dir):
@@ -379,70 +304,6 @@ def load_pc_weights(profile_dir):
     return weights, useless
 
 
-def pigou_net(gt, weights, useless, ipcs, no_ipcs, tname, bw):
-    """Per-(pc, policy) net benefit under Pigouvian accounting.
-
-    Returns {pc: {"pf:deg": net}} with 'no' implicit at 0. See
-    pigou_labels for the model.
-    """
-    ptab = {}
-    for pf, degs in CANDIDATE_FAMILIES.items():
-        for deg in degs:
-            key = f"{pf}:{deg}"
-            G = V = 0.0
-            U = 0
-            for pc, rec in gt.items():
-                amats = rec.get("all_amats") or {}
-                a_p = float(amats.get(key, 0.0) or 0.0)
-                a_n = float(amats.get("no:1", 0.0) or 0.0)
-                w = weights.get(pc, 0)
-                if a_p <= 0.0 or a_n <= 0.0 or w <= 0:
-                    continue
-                d = (a_p - a_n) * w
-                if d > 0:
-                    V += d
-                else:
-                    G += -d
-                U += useless.get((pc, key), 0)
-            ptab[key] = (G, V, U)
-
-    rho = {}
-    for key in ptab:
-        pf, deg = key.rsplit(":", 1)
-        ipc_p = ipcs.get((tname, policy_to_stat_name(pf, int(deg)), bw))
-        ipc_n = no_ipcs.get((tname, bw))
-        if not (ipc_p and ipc_n):
-            continue
-        G, V, U = ptab[key]
-        d_amat = V - G
-        if d_amat == 0.0:
-            continue
-        r = (1e8 / ipc_p - 1e8 / ipc_n) / d_amat
-        if r > 0.0:
-            rho[key] = r  # negative: AMAT moves against cycles - distrust
-
-    nets = {}
-    for pc, rec in gt.items():
-        amats = rec.get("all_amats") or {}
-        a_n = float(amats.get("no:1", 0.0) or 0.0)
-        w = weights.get(pc, 0)
-        if a_n <= 0.0 or w <= 0:
-            continue
-        row = {}
-        for key, a_p in amats.items():
-            pf, deg = key.rsplit(":", 1)
-            if pf == "no" or float(a_p) <= 0.0:
-                continue
-            if not is_candidate(pf, int(deg)) or key not in rho:
-                continue
-            G, V, U = ptab[key]
-            share = useless.get((pc, key), 0) / U if U > 0 else 0.0
-            row[key] = ((a_n - float(a_p)) * w * rho[key]) - V * rho[key] * share
-        if row:
-            nets[pc] = row
-    return nets
-
-
 def read_hint_bin(path):
     """hint.bin -> {pc: policy index} (12 = OFF sentinel)."""
     import struct
@@ -453,20 +314,11 @@ def read_hint_bin(path):
             for o in range(16, 16 + cnt * 16, 16)}
 
 
-def idx_to_key(idx):
-    """Policy index -> 'pf:deg' key ('no:1' for the OFF sentinel)."""
-    if idx >= 12:
-        return "no:1"
-    keys = [f"{pf}:{deg}" for pf, degs in CANDIDATE_FAMILIES.items() for deg in degs]
-    return keys[idx]
-
-
 def load_mix_records(seg_txt):
     """Per-PC mixed-regime evidence from a hint_eval seg-sim output's
     profile tail: {pc_str: (prefetch_issued, avg_amat)}. Empty when the
     seg sim has not been run (first pass) - the rescue then has no
     jurisdiction and the gate falls back to ledger-only behavior."""
-    import json
     out = {}
     if not os.path.exists(seg_txt):
         return out
@@ -481,7 +333,6 @@ def load_mix_records(seg_txt):
 
 def seg_ipc(seg_txt):
     """CPU 0 cumulative IPC from a seg-sim output, None if absent."""
-    import re
     if not os.path.exists(seg_txt):
         return None
     ipc = None
@@ -493,106 +344,33 @@ def seg_ipc(seg_txt):
     return ipc
 
 
-def pigou_gate_labels(gt, wci_bin, nets, ipcs, no_ipcs, tname, bw,
-                      mix_ev=None, poison_habitat=True):
-    """Scheme D: wci selection gated by the Pigouvian ledger.
-
-    wci owns the ranking and the 'no' opportunity-cost tax (without it
-    prefetch-friendly traces over-shut: sphinx3 loses 19% when no sits
-    untaxed at net=0). The ledger owns the absolute externality check: a
-    label whose allocated victim cost exceeds its realized gain gets
-    demoted to OFF. On povray this strips the 9.4% poison labels wci
-    cannot see; on sphinx3 every surviving label has positive expected
-    value, so the friendly side is untouched.
-
-    Three jurisdiction limits, all measured:
-    - Tied PCs are exempt: their wci label is the trace-wide best (a
-      global decision), and the ledger reads their benefit as ~0 (an
-      artifact of AMAT equality; 'no' is not part of the tie). Gating
-      them stripped sphinx3's load-bearing sandbox coverage (66% tied).
-    - Policies whose isolated run already beats 'no' (dC <= 0) are
-      exempt: their global externality is already net-negative, and the
-      victim costs V measured in the single-policy regime do not
-      transfer to the mixed run, where per-PC selection and the runtime
-      congestion gate change the cost structure (cactusADM/lbm/milc
-      stream/dspatch labels: correct demotions in the ledger, ~-1% each
-      in the sim).
-    - Mixed-regime rescue: outside poison habitats (traces whose wci
-      mix already loses to 'no' - povray/xalancbmk/sjeng, where local
-      benefit evidence is untrustworthy because the global book says
-      net harm), a PC whose own seg-sim record shows it benefited from
-      its prefetches (issued > 0 and avg_amat < 0.995 * amat_no) keeps
-      its label. mcf is the extreme case: isolated sandbox_d1 is toxic
-      (-7% vs no), yet in the mix its 10 labeled PCs issue 86% of all
-      prefetches and carry the whole +22%; the ledger demoted them on
-      isolation-priced victims and cost 17.8% IPC. PCs that flood
-      without benefiting (mcf 0x402c88/0x402cb8: 250K issued, ~0 hits,
-      amat unchanged) are still demoted - the mix itself convicts them.
-    """
-    ipc_n = no_ipcs.get((tname, bw))
-    sel = {f"0x{pc:x}": idx for pc, idx in read_hint_bin(wci_bin).items()}
-    labels = []
-    for pc, rec in gt.items():
-        key = idx_to_key(sel.get(pc, 12))
-        if key != "no:1" and not all_amats_tied(rec) and ipc_n:
-            pf, deg = key.rsplit(":", 1)
-            ipc_p = ipcs.get((tname, policy_to_stat_name(pf, int(deg)), bw))
-            toxic = ipc_p is not None and (1e8 / ipc_p - 1e8 / ipc_n) > 0.0
-            if toxic and nets.get(pc, {}).get(key, 0.0) <= 0.0:
-                rescued = False
-                if mix_ev and not poison_habitat:
-                    iss, amat_mix = mix_ev.get(pc, (0, None))
-                    a_n = rec["all_amats"].get("no:1")
-                    rescued = (iss > 0 and a_n is not None
-                               and amat_mix is not None
-                               and amat_mix < 0.995 * a_n)
-                if not rescued:
-                    key = "no:1"
-        pf, deg = key.rsplit(":", 1)
-        labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
-    return labels
+IPC_RE = re.compile(r"cumulative IPC:\s*([\d.]+)")
 
 
-def pigou_labels(gt, weights, useless, ipcs, no_ipcs, tname, bw, gb_key):
-    """Scheme C: Pigouvian externality accounting.
-
-    The per-PC AMAT signal privatizes benefits and externalizes costs: a
-    PC whose own prefetch hits score a local AMAT win even when the cache
-    pollution / bandwidth / queue costs those prefetches impose on every
-    other PC outweigh it (povray: 9.4% of PCs labeled with a prefetcher
-    whose isolated run loses 1-6M cycles trace-wide, worth -1.1% IPC).
-
-    Charge each PC the externality it creates, in realized cycles:
-
-        G(P)  = sum_j w_j * max(0, amat_j(no) - amat_j(P))   # gainers
-        V(P)  = sum_j w_j * max(0, amat_j(P) - amat_j(no))   # victims
-        rho(P) = dC(P) / (V(P) - G(P))    # AMAT -> IPC conversion rate
-        net_i(P) = rho * [ (amat_i(no) - amat_i(P)) * w_i
-                           - V * u_i(P) / U(P) ]
-
-    rho is measured on the isolated single-policy runs: on povray it is
-    ~0.003, i.e. 99.7% of nominal AMAT-cycles never reach the IPC level
-    (out-of-order overlap hides them), and the 27M-cycle 'gain' of the
-    top poison PC converts to ~100K realized cycles - less than the
-    victim loss its useless prefetches allocate back to it.
-
-    Conservation: sum_i net_i(P) = rho*(G - V) = -dC(P), so the ledger
-    exactly reproduces each policy's global cycle delta. 'no' sits at
-    net = 0; a policy must buy its way past the victims it creates.
-    """
-    nets = pigou_net(gt, weights, useless, ipcs, no_ipcs, tname, bw)
-    labels = []
-    for pc, rec in gt.items():
-        if all_amats_tied(rec):
-            best_key = gb_key
-        else:
-            best_key, best_net = "no:1", 0.0
-            for key, net in nets.get(pc, {}).items():
-                if net > best_net:
-                    best_key, best_net = key, net
-        pf, deg = best_key.rsplit(":", 1)
-        labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
-    return labels
+def global_best(bw_dir):
+    """Argmax cumulative IPC over the single-policy eval files in bw_dir.
+    Returns (pf, deg) or None."""
+    best = None
+    best_ipc = 0.0
+    for fn in os.listdir(bw_dir):
+        m = re.match(r"^(sandbox|dspatch|mlop|stream)_d(\d+)\.txt$", fn)
+        if not m:
+            continue
+        pf, deg = m.group(1), int(m.group(2))
+        if not is_candidate(pf, deg):
+            continue
+        last = None
+        try:
+            with open(os.path.join(bw_dir, fn), errors="replace") as f:
+                for line in f:
+                    if "cumulative IPC" in line:
+                        last = line
+            v = float(IPC_RE.search(last).group(1))
+        except (OSError, AttributeError, ValueError):
+            continue
+        if v > best_ipc:
+            best_ipc, best = v, (pf, deg)
+    return best
 
 
 def gen_bin(labels, out_path):
@@ -606,16 +384,138 @@ def gen_bin(labels, out_path):
     os.remove(tmp)
 
 
+# ── cell assembly ──
+
+def build_cell(tname, bw, gt, tie_gt, gb_key, acc, nets, wci_sel,
+               mix_ev, habitat):
+    """CellData with all accessors bound to this (trace, bw)."""
+    twaste, churn, ipc_gap, ipc_gap_no, l2g, waste, ipcs, ipc_n = acc
+    return CellData(
+        tname, bw, gt, tie_gt=tie_gt, gb_key=gb_key,
+        twaste=lambda pf, deg: twaste.get((tname, policy_to_stat_name(pf, deg), bw), 0.0),
+        churn=lambda pf, deg: churn.get((tname, policy_to_stat_name(pf, deg), bw), 0.0),
+        ipc_gap=lambda pf, deg: ipc_gap.get((tname, policy_to_stat_name(pf, deg), bw), 0.0),
+        ipc_gap_no=ipc_gap_no.get((tname, bw), 0.0),
+        l2_gap=lambda pf, deg: l2g.get((pf, deg), 0.0),
+        waste_acc=lambda pf, deg: 0.0 if pf == "no" else waste.get(
+            (tname, policy_to_stat_name(pf, deg), bw), 0.0),
+        nets=nets,
+        toxic=(lambda key: False) if ipc_n is None else (
+            lambda key: _is_toxic(key, tname, bw, ipcs, ipc_n)),
+        wci_sel=wci_sel, mix_ev=mix_ev, poison_habitat=habitat)
+
+
+def _is_toxic(key, tname, bw, ipcs, ipc_n):
+    """Isolated single-policy run loses to 'no' (dC > 0)."""
+    pf, deg = key.rsplit(":", 1)
+    ipc_p = ipcs.get((tname, policy_to_stat_name(pf, int(deg)), bw))
+    return ipc_p is not None and (1e8 / ipc_p - 1e8 / ipc_n) > 0.0
+
+
+def run_schemes(schemes, tname, bw, gt_variants, gb_key, acc, pc_w, pc_u,
+                ipcs, no_ipcs, wci_bin, seg_dir, out_dir):
+    """Generate every requested scheme's bin for one cell.
+
+    gt_variants: {"native": gt_bw, "gt3200": gt3200} - score="oracle"
+    selects on gt3200 with the bw-native gt for tie checks (Scheme B);
+    everything else selects on the bw-native ground truth.
+    Returns {scheme: bin_path}.
+    """
+    gt_native = gt_variants["native"]
+    if not gt_native:
+        return {}
+    need_nets = any(c["score"] == "pigou" or c["gate"] == "pigou"
+                    for _, c in schemes)
+    nets = pigou_net(gt_native, pc_w, pc_u, ipcs, no_ipcs, tname, bw) \
+        if need_nets else None
+    need_rescue = any(c["gate"] == "pigou" and c["pg_mix_rescue"]
+                      for _, c in schemes)
+    mix_ev, habitat = None, True
+    if seg_dir and need_rescue:
+        wci_txt = os.path.join(seg_dir, tname, bw, "tax_wci.txt")
+        no_txt = os.path.join(seg_dir, tname, bw, "no.txt")
+        mix_ev = load_mix_records(wci_txt)
+        wci_ipc, no_ipc = seg_ipc(wci_txt), seg_ipc(no_txt)
+        if wci_ipc is not None and no_ipc is not None:
+            habitat = wci_ipc < no_ipc
+    written = {}
+    for out_name, cfg in schemes:
+        wci_sel = None
+        if cfg["gate"] == "pigou" and cfg["base"] == "wci_bin":
+            if not os.path.exists(wci_bin):
+                continue  # historical behavior: skip when the wci bin is absent
+            wci_sel = {f"0x{pc:x}": idx for pc, idx in read_hint_bin(wci_bin).items()}
+        if cfg["score"] == "oracle":
+            gt, tie_gt = gt_variants["gt3200"], gt_native
+        else:
+            gt, tie_gt = gt_native, None
+        cell = build_cell(tname, bw, gt, tie_gt, gb_key, acc, nets,
+                          wci_sel, mix_ev, habitat)
+        out = os.path.join(out_dir, out_name)
+        gen_bin(make_labels(cell, cfg), out)
+        written[out_name] = out
+    return written
+
+
+def parse_args(argv):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("run_dir")
+    ap.add_argument("stage2_dir")
+    ap.add_argument("stats_csv")
+    ap.add_argument("cost_base", nargs="?")
+    ap.add_argument("seg_dir", nargs="?",
+                    help="seg-sim outputs (wci pass) enabling the mixed-regime rescue")
+    ap.add_argument("--schemes", default=",".join(DEFAULT_SCHEMES),
+                    help="comma-separated preset names (see --list)")
+    ap.add_argument("--config", default=None,
+                    help="JSON overrides on top of DEFAULT_CONFIG; generates one "
+                         "extra bin set named hint_<config-name>.bin")
+    ap.add_argument("--config-name", default=None,
+                    help="output tag for --config (default: cfg_<hash>)")
+    ap.add_argument("--list", action="store_true",
+                    help="print PARAM_SPACE and PRESETS as JSON and exit")
+    return ap.parse_args(argv)
+
+
 def main():
-    run_dir, stage2_dir, stats_csv = sys.argv[1], sys.argv[2], sys.argv[3]
-    cost_base = sys.argv[4] if len(sys.argv) > 4 else None
-    seg_dir = sys.argv[5] if len(sys.argv) > 5 else None  # wci seg-sim outputs (2nd pass rescue)
+    args = parse_args(sys.argv[1:])
+    if args.list:
+        print(json.dumps({
+            "param_space": [{"name": n, "kind": k, "bounds": b, "default": d}
+                            for n, k, b, d in PARAM_SPACE],
+            "default_config": DEFAULT_CONFIG,
+            "presets": PRESETS,
+        }, indent=2))
+        return
+
+    schemes = []
+    for name in args.schemes.split(","):
+        name = name.strip()
+        if not name:
+            continue
+        if name not in PRESETS:
+            sys.exit(f"unknown scheme {name!r} (see --list)")
+        schemes.append((name, SCHEME_OUT.get(name, f"hint_tax_{name}.bin"),
+                        PRESETS[name]))
+    if args.config:
+        overrides = json.loads(args.config)
+        unknown = set(overrides) - set(DEFAULT_CONFIG)
+        if unknown:
+            sys.exit(f"unknown config keys: {sorted(unknown)} (see --list)")
+        cfg = dict(DEFAULT_CONFIG)
+        cfg.update(overrides)
+        tag = args.config_name or f"cfg_{config_slug(cfg)}"
+        schemes.append((tag, f"hint_{tag}.bin", cfg))
+
+    run_dir, stage2_dir, stats_csv = args.run_dir, args.stage2_dir, args.stats_csv
+    seg_dir = args.seg_dir
     waste = load_waste(stats_csv)  # accuracy-based: gate scheme
     demand_by_trace = {tname: load_demand_total(os.path.join(stage2_dir, tname, "profiling"))
                        for tname in os.listdir(stage2_dir)}
     twaste = load_traffic_waste(stats_csv, demand_by_trace)  # traffic-based: tax schemes
     churn = load_churn(stats_csv, demand_by_trace)  # pipeline-occupancy tax: degree selection
-    ipc_gap, ipc_gap_no, ipcs, no_ipcs = load_ipc_gaps(stats_csv)  # opportunity-cost tax: policy selection
+    ipc_gap, ipc_gap_no, ipcs, no_ipcs = load_ipc_gaps(stats_csv)  # opportunity-cost tax
 
     for tname in sorted(os.listdir(run_dir)):
         tdir = os.path.join(run_dir, tname)
@@ -631,159 +531,43 @@ def main():
                 continue
             gb = global_best(bw_dir) or GATE_FALLBACK  # this bw's offline global best
             gb_key = f"{gb[0]}:{gb[1]}"
+            acc = (twaste, churn, ipc_gap, ipc_gap_no, l2_gaps(bw_dir),
+                   waste, ipcs, no_ipcs.get((tname, bw)))
+            cell_schemes = [(out, cfg) for _, out, cfg in schemes]
+            written = run_schemes(
+                cell_schemes, tname, bw,
+                {"native": gt_native, "gt3200": gt3200}, gb_key, acc,
+                pc_w, pc_u, ipcs, no_ipcs,
+                os.path.join(bw_dir, "hint_tax_wci.bin"), seg_dir, bw_dir)
+            if SCHEME_OUT["gate_t90"] in written:
+                # quick distribution summary: lowest-tier (conservative) share
+                sel = read_hint_bin(written[SCHEME_OUT["gate_t90"]])
+                low = sum(1 for idx in sel.values()
+                          if idx_to_key(idx).rsplit(":", 1)[1]
+                          == str(min(CANDIDATE_FAMILIES[idx_to_key(idx).rsplit(":", 1)[0]]))
+                          and idx < 12)
+                print(f"{tname} {bw}: lowest-tier share = "
+                      f"{100*low/max(len(sel),1):.0f}% of {len(sel)} PCs")
 
-            def waste_of(pf, deg):
-                if pf == "no":
-                    return 0.0
-                return waste.get((tname, policy_to_stat_name(pf, deg), bw), 0.0)
-
-            # ── Scheme A: tax ablation ladder on native ground truth ──
-            l2g = l2_gaps(bw_dir)
-            for lname, (lam_w, use_churn, lam_i, lam_l2) in VARIANTS.items():
-                labels = []
-                for pc, rec in gt_native.items():
-                    if all_amats_tied(rec):
-                        best_key = gb_key  # no per-PC signal: trace-wide best
-                    else:
-                        best_key, best_score = None, None
-                        for key, amat in rec["all_amats"].items():
-                            pf, deg = key.rsplit(":", 1)
-                            deg = int(deg)
-                            if float(amat) <= 0.0:
-                                continue  # no measured data under this policy
-                            if pf == "no":
-                                # OFF pays the same opportunity-cost tax as
-                                # the prefetchers: giving up prefetching
-                                # costs the IPC gap between no and the
-                                # trace's best policy.
-                                score = float(amat) * (1.0 + lam_i * ipc_gap_no.get((tname, bw), 0.0))
-                            else:
-                                if not is_candidate(pf, deg):  # stale 15-policy labels
-                                    continue
-                                sname = policy_to_stat_name(pf, deg)
-                                w = twaste.get((tname, sname, bw), 0.0)
-                                c = churn.get((tname, sname, bw), 0.0) if use_churn else 0.0
-                                g = lam_i * ipc_gap.get((tname, sname, bw), 0.0)
-                                l = lam_l2 * l2g.get((pf, deg), 0.0)
-                                score = amat * (1.0 + lam_w * w + CHURN_LAMBDA * c + g + l)
-                            if best_score is None or score < best_score:
-                                best_key, best_score = key, score
-                        if best_key is None:
-                            best_key = gb_key  # no data: trace-wide best
-                    pf, deg = best_key.rsplit(":", 1)
-                    labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
-                out = os.path.join(bw_dir, f"hint_tax_{lname}.bin")
-                gen_bin(labels, out)
-
-            # ── Scheme B: 3200 label + waste gate at target bw ──
-            labels = []
-            for pc, rec in gt3200.items():
-                if pc in gt_native and all_amats_tied(gt_native[pc]):
-                    pf, deg = gb  # no per-PC signal: this bw's trace-wide best
-                else:
-                    pf, deg = rec["best_prefetch"], int(rec.get("best_degree", 1))
-                    if not is_candidate(pf, deg):
-                        pf, deg = GATE_FALLBACK
-                    elif waste_of(pf, deg) > GATE_THETA:
-                        # conservative fallback: same family, lowest tier
-                        pf, deg = pf, min(CANDIDATE_FAMILIES[pf])
-                labels.append({"pc": pc, "best_prefetch": pf, "best_degree": deg})
-            out = os.path.join(bw_dir, "hint_gate_t90.bin")
-            gen_bin(labels, out)
-
-            # ── Scheme C: Pigouvian externality accounting ──
-            out = os.path.join(bw_dir, "hint_tax_pigou.bin")
-            gen_bin(pigou_labels(gt_native, pc_w, pc_u, ipcs, no_ipcs,
-                                 tname, bw, gb_key), out)
-
-            # ── Scheme D: wci labels gated by the Pigouvian ledger ──
-            wci_bin = os.path.join(bw_dir, "hint_tax_wci.bin")
-            if os.path.exists(wci_bin):
-                nets = pigou_net(gt_native, pc_w, pc_u, ipcs, no_ipcs, tname, bw)
-                mix_ev, habitat = None, True
-                if seg_dir:
-                    wci_txt = os.path.join(seg_dir, tname, bw, "tax_wci.txt")
-                    no_txt = os.path.join(seg_dir, tname, bw, "no.txt")
-                    mix_ev = load_mix_records(wci_txt)
-                    wci_ipc, no_ipc = seg_ipc(wci_txt), seg_ipc(no_txt)
-                    if wci_ipc is not None and no_ipc is not None:
-                        habitat = wci_ipc < no_ipc
-                gen_bin(pigou_gate_labels(gt_native, wci_bin, nets,
-                                          ipcs, no_ipcs, tname, bw,
-                                          mix_ev, habitat),
-                        os.path.join(bw_dir, "hint_tax_pigougate.bin"))
-
-            # quick distribution summary: share of lowest-tier (conservative) labels
-            from collections import Counter
-            dist_a = Counter((l["best_prefetch"], l["best_degree"]) for l in labels)
-            low_share = sum(c for (pf, deg), c in dist_a.items() if deg == min(CANDIDATE_FAMILIES[pf]))
-            print(f"{tname} {bw}: lowest-tier share = "
-                  f"{100*low_share/max(len(labels),1):.0f}% of {len(labels)} PCs")
-
-        # ── bw3200: bandwidth tax on the 3200 ground truth ──
-        # The per-PC AMAT vs global IPC misalignment exists at 3200 too
-        # (e.g. mcf: dspatch wins per-PC AMAT but floods the channel), so
-        # the tax schemes apply at native bandwidth as well. Tied PCs get
+        # ── bw3200: the tax schemes apply at native bandwidth too (the
+        # per-PC AMAT vs global IPC misalignment exists at 3200 - mcf's
+        # dspatch wins per-PC AMAT but floods the channel). Tied PCs get
         # the trace-wide best without tax.
         eval_dir = os.path.join(stage2_dir, tname, "eval")
         if not os.path.isdir(eval_dir):
             continue
         gb3200 = global_best(eval_dir) or GATE_FALLBACK
-        l2g3200 = l2_gaps(eval_dir)
-        for lname, (lam_w, use_churn, lam_i, lam_l2) in VARIANTS.items():
-            labels = []
-            for pc, rec in gt3200.items():
-                if all_amats_tied(rec):
-                    best_key = f"{gb3200[0]}:{gb3200[1]}"
-                else:
-                    best_key, best_score = None, None
-                    for key, amat in rec["all_amats"].items():
-                        pf, deg = key.rsplit(":", 1)
-                        if float(amat) <= 0.0:
-                            continue  # no measured data under this policy
-                        if pf == "no":
-                            # OFF pays the same opportunity-cost tax as the
-                            # prefetchers (see the bw section above).
-                            score = float(amat) * (1.0 + lam_i * ipc_gap_no.get((tname, "bw3200"), 0.0))
-                        else:
-                            if not is_candidate(pf, int(deg)):
-                                continue
-                            sname = policy_to_stat_name(pf, int(deg))
-                            w = twaste.get((tname, sname, "bw3200"), 0.0)
-                            c = churn.get((tname, sname, "bw3200"), 0.0) if use_churn else 0.0
-                            g = lam_i * ipc_gap.get((tname, sname, "bw3200"), 0.0)
-                            l = lam_l2 * l2g3200.get((pf, int(deg)), 0.0)
-                            score = amat * (1.0 + lam_w * w + CHURN_LAMBDA * c + g + l)
-                        if best_score is None or score < best_score:
-                            best_key, best_score = key, score
-                    if best_key is None:
-                        best_key = f"{gb3200[0]}:{gb3200[1]}"  # no data: trace-wide best
-                pf, deg = best_key.rsplit(":", 1)
-                labels.append({"pc": pc, "best_prefetch": pf, "best_degree": int(deg)})
-            out = os.path.join(stage2_dir, tname, f"hint_tax_{lname}.bin")
-            gen_bin(labels, out)
-
-        # ── Scheme C at native bandwidth ──
-        labels = pigou_labels(gt3200, pc_w, pc_u, ipcs, no_ipcs,
-                              tname, "bw3200", f"{gb3200[0]}:{gb3200[1]}")
-        gen_bin(labels, os.path.join(stage2_dir, tname, "hint_tax_pigou.bin"))
-
-        # ── Scheme D at native bandwidth ──
-        wci_bin = os.path.join(stage2_dir, tname, "hint_tax_wci.bin")
-        if os.path.exists(wci_bin):
-            nets = pigou_net(gt3200, pc_w, pc_u, ipcs, no_ipcs, tname, "bw3200")
-            mix_ev, habitat = None, True
-            if seg_dir:
-                wci_txt = os.path.join(seg_dir, tname, "bw3200", "tax_wci.txt")
-                no_txt = os.path.join(seg_dir, tname, "bw3200", "no.txt")
-                mix_ev = load_mix_records(wci_txt)
-                wci_ipc, no_ipc = seg_ipc(wci_txt), seg_ipc(no_txt)
-                if wci_ipc is not None and no_ipc is not None:
-                    habitat = wci_ipc < no_ipc
-            gen_bin(pigou_gate_labels(gt3200, wci_bin, nets,
-                                      ipcs, no_ipcs, tname, "bw3200",
-                                      mix_ev, habitat),
-                    os.path.join(stage2_dir, tname, "hint_tax_pigougate.bin"))
+        gb_key = f"{gb3200[0]}:{gb3200[1]}"
+        acc = (twaste, churn, ipc_gap, ipc_gap_no, l2_gaps(eval_dir),
+               waste, ipcs, no_ipcs.get((tname, "bw3200")))
+        cell_schemes = [(out, cfg) for name, out, cfg in schemes
+                        if name not in NO_3200]
+        run_schemes(
+            cell_schemes, tname, "bw3200",
+            {"native": gt3200, "gt3200": gt3200}, gb_key, acc,
+            pc_w, pc_u, ipcs, no_ipcs,
+            os.path.join(stage2_dir, tname, "hint_tax_wci.bin"), seg_dir,
+            os.path.join(stage2_dir, tname))
 
 
 if __name__ == "__main__":
