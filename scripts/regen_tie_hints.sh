@@ -4,11 +4,11 @@
 #   bw3200: hint.bin / hint_filter.bin (batch dirs)
 #   bw1600/bw800: hint.bin / hint_filter.bin + tax/gate relabels (bw dirs)
 set -uo pipefail
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
 cd "$ROOT"
-BATCH=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
-BWRUN=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
-SEGDIR=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-seg
+BATCH=/public/home/liz/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-172852
+BWRUN=/public/home/liz/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-173819
+SEGDIR=/public/home/liz/pc-split/ChampSim/artifacts/runs/l1d-seg-x10
 
 ipc_of() { grep -oP "cumulative IPC:\s*\K[\d.]+" "$1" 2>/dev/null | tail -1; }
 

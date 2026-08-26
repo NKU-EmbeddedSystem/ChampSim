@@ -2,13 +2,13 @@
 # Re-run per-segment sims: per trace x bw -> {no, best tier of each of the
 # 4 families, hint, hint_filter}, 1M warmup + 10M sim, 500k heartbeats.
 set -uo pipefail
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
 cd "$ROOT"
-BATCH=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
-BWRUN=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
-OUT="${3:-/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-seg}"
+BATCH="${BATCH_DIR:-/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040}"
+BWRUN="${BWRUN_DIR:-/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017}"
+OUT="${3:-/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-seg}"
 mkdir -p "$OUT"
-TRACE_DIR=/mnt/sdd/trace/CRC2_trace/discriminative
+TRACE_DIR=/public/home/liz/trace/CRC2_trace/discriminative
 JOBS=${JOBS:-90}; running=0
 WARMUP="${1:-1000000}"; SIM="${2:-10000000}"
 
@@ -16,10 +16,12 @@ WARMUP="${1:-1000000}"; SIM="${2:-10000000}"
 ipc() { grep -oP "cumulative IPC:\s*\K[\d.]+" "$1" 2>/dev/null | tail -1; }
 
 run_one() { # bin hint_or_empty trace outfile
+    # 6h cap: mcf+hint_eval runs pathologically slowly (prefetch flood through
+    # the L1D tag queues); without a cap they would block SEGRUN_DONE forever.
     if [ -n "$2" ]; then
-        "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" --hint-file "$2" "$3" > "$4" 2>&1
+        timeout 21600 "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" --hint-file "$2" "$3" > "$4" 2>&1
     else
-        "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" "$3" > "$4" 2>&1
+        timeout 21600 "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" "$3" > "$4" 2>&1
     fi
 }
 

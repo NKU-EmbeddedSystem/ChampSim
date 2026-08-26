@@ -3,18 +3,18 @@
 # the tax schemes were designed for bandwidth-constrained runs).
 # Writes <seg_dir>/<trace>/bw<bw>/{tax_l05,tax_l20}.txt.
 set -uo pipefail
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
 cd "$ROOT"
-BWRUN=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
-BATCH=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
-TRACE_DIR=/mnt/sdd/trace/CRC2_trace/discriminative
-OUT="${1:-/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-seg}"
+BWRUN=$ROOT/artifacts/runs/l1d-bw/20260822-173819
+BATCH=$ROOT/artifacts/runs/l1d-baseline-batch/20260822-172852
+TRACE_DIR=/public/home/liz/trace/CRC2_trace/discriminative
+OUT="${1:-$ROOT/artifacts/runs/l1d-seg-x10}"
 ONLY_BW="${2:-}"  # optional: "3200"/"1600"/"800" to restrict the bandwidth
-JOBS=${JOBS:-90}; running=0
-WARMUP=1000000; SIM=10000000
+JOBS=${JOBS:-200}; running=0
+WARMUP=10000000; SIM=100000000
 
 run_one() { # bin hint trace outfile
-    "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" --hint-file "$2" "$3" > "$4" 2>&1
+    timeout 21600 "$1" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" --hint-file "$2" "$3" > "$4" 2>&1
 }
 
 for trace in "$TRACE_DIR"/*.trace.xz; do

@@ -2,11 +2,11 @@
 # Re-run only missing or incomplete outputs in a l1d-seg style directory.
 # Usage: run_seg_resume.sh <warmup> <sim> <seg_dir>
 set -uo pipefail
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
 cd "$ROOT"
-BATCH=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
-BWRUN=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
-TRACE_DIR=/mnt/sdd/trace/CRC2_trace/discriminative
+BATCH=/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
+BWRUN=/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
+TRACE_DIR=/public/home/liz/trace/CRC2_trace/discriminative
 OUT="${3:?seg dir required}"
 JOBS=${JOBS:-90}; running=0
 WARMUP="${1:-1000000}"; SIM="${2:-10000000}"

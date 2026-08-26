@@ -2,7 +2,7 @@
 # Rebuild all experiment binaries with -DSTAT_PRINTING_PERIOD=500000LL
 # (20 heartbeat segments over a 1e7-instruction sim).
 set -uo pipefail
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
 cd "$ROOT"
 GLOBAL_OPTIONS="$ROOT/global.options"
 ORIG_OPTIONS="$(cat "$GLOBAL_OPTIONS")"

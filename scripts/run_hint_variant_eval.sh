@@ -1,10 +1,10 @@
 #!/bin/bash
 set -uo pipefail
-cd /mnt/sdd/liz/pc-split/ChampSim
-ROOT=/mnt/sdd/liz/pc-split/ChampSim
-BWRUN=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
-BATCH=/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
-TRACE_DIR=/mnt/sdd/trace/CRC2_trace/discriminative
+cd /public/home/liz/pc-split/ChampSim
+ROOT=/public/home/liz/pc-split/ChampSim
+BWRUN=/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-bw/20260822-175017
+BATCH=/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040
+TRACE_DIR=/public/home/liz/trace/CRC2_trace/discriminative
 JOBS=90; running=0
 WARMUP=1000000; SIM=10000000
 

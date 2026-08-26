@@ -129,7 +129,7 @@ def plot_table(rows, out_png):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("batch_dir",
-                    default="/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040",
+                    default="/public/home/liz/data_storage/pc-split/ChampSim/artifacts/runs/l1d-baseline-batch/20260822-173040",
                     nargs="?")
     ap.add_argument("--png", default=None,
                     help="also render the table as a PNG image")

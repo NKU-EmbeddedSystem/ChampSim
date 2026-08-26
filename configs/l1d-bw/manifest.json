@@ -1,7 +1,7 @@
 [
   {
     "name": "champsim_l1d_dspatch_d1_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d1.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "dspatch_d1",
@@ -9,7 +9,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d16_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d16.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "dspatch_d16",
@@ -17,7 +17,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d64_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d64.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_dspatch_d64.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "dspatch_d64",
@@ -25,7 +25,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d1_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d1.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "mlop_d1",
@@ -33,7 +33,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d16_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d16.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "mlop_d16",
@@ -41,7 +41,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d8_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_mlop_d8.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "mlop_d8",
@@ -49,7 +49,7 @@
   },
   {
     "name": "champsim_l1d_no_d1_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_no_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_no_d1.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "no_d1",
@@ -57,7 +57,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d1_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d1.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "sandbox_d1",
@@ -65,7 +65,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d4_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d4.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "sandbox_d4",
@@ -73,7 +73,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d8_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_sandbox_d8.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "sandbox_d8",
@@ -81,7 +81,7 @@
   },
   {
     "name": "champsim_l1d_stream_d1_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d1.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "stream_d1",
@@ -89,7 +89,7 @@
   },
   {
     "name": "champsim_l1d_stream_d4_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d4.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "stream_d4",
@@ -97,7 +97,7 @@
   },
   {
     "name": "champsim_l1d_stream_d8_bw3200",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw3200/champsim_l1d_stream_d8.json",
     "bw_level": "bw3200",
     "data_rate": 3200,
     "base_prefetcher": "stream_d8",
@@ -105,7 +105,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d1_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d1.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "dspatch_d1",
@@ -113,7 +113,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d16_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d16.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "dspatch_d16",
@@ -121,7 +121,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d64_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d64.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_dspatch_d64.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "dspatch_d64",
@@ -129,7 +129,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d1_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d1.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "mlop_d1",
@@ -137,7 +137,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d16_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d16.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "mlop_d16",
@@ -145,7 +145,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d8_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_mlop_d8.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "mlop_d8",
@@ -153,7 +153,7 @@
   },
   {
     "name": "champsim_l1d_no_d1_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_no_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_no_d1.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "no_d1",
@@ -161,7 +161,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d1_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d1.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "sandbox_d1",
@@ -169,7 +169,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d4_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d4.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "sandbox_d4",
@@ -177,7 +177,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d8_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_sandbox_d8.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "sandbox_d8",
@@ -185,7 +185,7 @@
   },
   {
     "name": "champsim_l1d_stream_d1_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d1.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "stream_d1",
@@ -193,7 +193,7 @@
   },
   {
     "name": "champsim_l1d_stream_d4_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d4.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "stream_d4",
@@ -201,7 +201,7 @@
   },
   {
     "name": "champsim_l1d_stream_d8_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_l1d_stream_d8.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "stream_d8",
@@ -209,7 +209,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d1_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d1.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "dspatch_d1",
@@ -217,7 +217,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d16_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d16.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "dspatch_d16",
@@ -225,7 +225,7 @@
   },
   {
     "name": "champsim_l1d_dspatch_d64_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d64.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_dspatch_d64.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "dspatch_d64",
@@ -233,7 +233,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d1_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d1.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "mlop_d1",
@@ -241,7 +241,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d16_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d16.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "mlop_d16",
@@ -249,7 +249,7 @@
   },
   {
     "name": "champsim_l1d_mlop_d8_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_mlop_d8.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "mlop_d8",
@@ -257,7 +257,7 @@
   },
   {
     "name": "champsim_l1d_no_d1_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_no_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_no_d1.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "no_d1",
@@ -265,7 +265,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d1_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d1.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "sandbox_d1",
@@ -273,7 +273,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d4_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d4.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "sandbox_d4",
@@ -281,7 +281,7 @@
   },
   {
     "name": "champsim_l1d_sandbox_d8_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_sandbox_d8.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "sandbox_d8",
@@ -289,7 +289,7 @@
   },
   {
     "name": "champsim_l1d_stream_d1_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d1.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "stream_d1",
@@ -297,7 +297,7 @@
   },
   {
     "name": "champsim_l1d_stream_d4_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d4.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "stream_d4",
@@ -305,7 +305,7 @@
   },
   {
     "name": "champsim_l1d_stream_d8_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_l1d_stream_d8.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "stream_d8",
@@ -313,28 +313,28 @@
   },
   {
     "name": "champsim_no_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_config_no.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_config_no.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "no_baseline"
   },
   {
     "name": "champsim_hint_eval_bw1600",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_config_hint_eval.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw1600/champsim_config_hint_eval.json",
     "bw_level": "bw1600",
     "data_rate": 1600,
     "base_prefetcher": "hint_eval"
   },
   {
     "name": "champsim_no_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_config_no.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_config_no.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "no_baseline"
   },
   {
     "name": "champsim_hint_eval_bw800",
-    "config_path": "/home/liz/data_storage/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_config_hint_eval.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-bw/bw800/champsim_config_hint_eval.json",
     "bw_level": "bw800",
     "data_rate": 800,
     "base_prefetcher": "hint_eval"

@@ -3,91 +3,91 @@
     "name": "champsim_l1d_sandbox_d1",
     "prefetcher": "sandbox",
     "degree": 1,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d1.json",
     "degree_macro": "-DSANDBOX_PREF_DEGREE=1"
   },
   {
     "name": "champsim_l1d_sandbox_d4",
     "prefetcher": "sandbox",
     "degree": 4,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d4.json",
     "degree_macro": "-DSANDBOX_PREF_DEGREE=4"
   },
   {
     "name": "champsim_l1d_sandbox_d8",
     "prefetcher": "sandbox",
     "degree": 8,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_sandbox_d8.json",
     "degree_macro": "-DSANDBOX_PREF_DEGREE=8"
   },
   {
     "name": "champsim_l1d_dspatch_d1",
     "prefetcher": "dspatch",
     "degree": 1,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d1.json",
     "degree_macro": "-DDSPATCH_PREF_DEGREE=1"
   },
   {
     "name": "champsim_l1d_dspatch_d16",
     "prefetcher": "dspatch",
     "degree": 16,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d16.json",
     "degree_macro": "-DDSPATCH_PREF_DEGREE=16"
   },
   {
     "name": "champsim_l1d_dspatch_d64",
     "prefetcher": "dspatch",
     "degree": 64,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d64.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_dspatch_d64.json",
     "degree_macro": "-DDSPATCH_PREF_DEGREE=64"
   },
   {
     "name": "champsim_l1d_mlop_d1",
     "prefetcher": "mlop",
     "degree": 1,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d1.json",
     "degree_macro": "-DMLOP_PREF_DEGREE=1"
   },
   {
     "name": "champsim_l1d_mlop_d8",
     "prefetcher": "mlop",
     "degree": 8,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d8.json",
     "degree_macro": "-DMLOP_PREF_DEGREE=8"
   },
   {
     "name": "champsim_l1d_mlop_d16",
     "prefetcher": "mlop",
     "degree": 16,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d16.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_mlop_d16.json",
     "degree_macro": "-DMLOP_PREF_DEGREE=16"
   },
   {
     "name": "champsim_l1d_stream_d1",
     "prefetcher": "stream",
     "degree": 1,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d1.json",
     "degree_macro": "-DSTREAM_PREF_DEGREE=1"
   },
   {
     "name": "champsim_l1d_stream_d4",
     "prefetcher": "stream",
     "degree": 4,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d4.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d4.json",
     "degree_macro": "-DSTREAM_PREF_DEGREE=4"
   },
   {
     "name": "champsim_l1d_stream_d8",
     "prefetcher": "stream",
     "degree": 8,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d8.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_stream_d8.json",
     "degree_macro": "-DSTREAM_PREF_DEGREE=8"
   },
   {
     "name": "champsim_l1d_no_d1",
     "prefetcher": "no",
     "degree": 1,
-    "config_path": "/mnt/sdd/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_no_d1.json",
+    "config_path": "/public/home/liz/pc-split/ChampSim/configs/l1d-profile/champsim_l1d_no_d1.json",
     "degree_macro": null
   }
 ]

@@ -8,7 +8,7 @@ RUN_DIR="${1:?Usage: $0 <bw_run_dir> [warmup] [sim]}"
 WARMUP="${2:-1000000}"
 SIM="${3:-10000000}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TRACE_DIR="/mnt/sdd/trace/CRC2_trace/discriminative"
+TRACE_DIR="/public/home/liz/trace/CRC2_trace/discriminative"
 
 # ── Phase 1: extract profiling JSONL, aggregate, generate hint.bin per (trace, bw) ──
 for bw in bw1600 bw800; do
@@ -44,7 +44,9 @@ for bw in bw1600 bw800; do
         hint="$bw_dir/hint.bin"
         trace="$TRACE_DIR/$tname.trace.xz"
         [ -f "$hint" ] && [ -f "$trace" ] || continue
-        "$ROOT/bin/champsim_hint_eval_$bw" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" \
+        # 6h cap: mcf+hint_eval runs pathologically slowly (prefetch flood
+        # through the L1D tag queues); without a cap it would block this wait.
+        timeout 21600 "$ROOT/bin/champsim_hint_eval_$bw" --warmup-instructions "$WARMUP" --simulation-instructions "$SIM" \
             --hint-file "$hint" "$trace" > "$bw_dir/b2_hint_native.txt" 2>&1 &
     done
 done
